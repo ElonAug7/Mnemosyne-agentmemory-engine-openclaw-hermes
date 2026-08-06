@@ -7,11 +7,11 @@
 # 用法（两种方式任选其一）：
 #
 #   方法一（推荐）: 手动放到工作区
-#     1. cp -r Mnemosyne-v2 ~/.openclaw/workspace/tools/
-#     2. cd ~/.openclaw/workspace/tools/Mnemosyne-v2 && bash install.sh
+#     1. cp -r Mnemosyne-v3-lite ~/.openclaw/workspace/tools/
+#     2. cd ~/.openclaw/workspace/tools/Mnemosyne-v3-lite && bash install.sh
 #
 #   方法二: 从任意位置一键部署
-#     1. bash /path/to/Mnemosyne-v2/install.sh
+#     1. bash /path/to/Mnemosyne-v3-lite/install.sh
 #     脚本自动检测 → 复制到 workspace/tools/memory-engine → 完成安装
 #
 # 自动完成：
@@ -67,7 +67,7 @@ ENGINE_DIR="$SELF_DIR"
 HOOK_DIR="$HOME/.openclaw/hooks/memory-recorder"
 UI_PORT="${MEMORY_UI_PORT:-8765}"
 
-echo "🧠 Mnemosyne v2 安装程序"
+echo "🧠 Mnemosyne v3-lite 安装程序"
 echo "   引擎目录: $ENGINE_DIR"
 echo "   工作区:   $WORKSPACE"
 echo ""

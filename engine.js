@@ -1,14 +1,9 @@
 #!/usr/bin/env node
 /**
- * Mnemosyne v2 — OpenClaw 可移植分层记忆引擎
+ * Mnemosyne v3-lite — OpenClaw 精简记忆引擎
  *
- * 命名来源：Mnemosyne（谟涅摩绪涅），希腊记忆女神，缪斯之母。
- *
- * 架构：raw / working / inject / medium / long / index / versions
- *
- * P0: 短期记忆三层 + 工作记忆 + 结构化压缩 + memory.md边界 + 清理
- * P1: 多路并行召回 + hook补偿 + 敏感信息脱敏
- * P2: embedding可选 + UI安全 + 恢复/索引重建
+ * 移除: 版本管理/备份导出/会话权限/蒸馏审阅/信号发送/开发日志/内容索引/时间线/配置命令/imp校准
+ * 保留: record/sync/search/consolidate/status/health/todos/embed/reindex/cleanup/stats/init
  */
 'use strict';
 
@@ -232,6 +227,7 @@ function readMaybeGz(full) {
 const IMP_DECISION = /决定|确认|结论|选定|采纳|最终方案|定了|拍板|agreed|decided|final decision/i;
 const IMP_TODO     = /待办|todo|fixme|下一步|计划|回头|稍后|提醒我|记得|别忘了|截止|deadline|明天|后天/i;
 const IMP_FACT     = /\d+\s*(元|块|￥|\$|天|小时|点|号|月|年|%)/;
+const IMP_TECH     = /优化|改进|重构|架构|设计|代码|bug|修复|性能|安全|配置|系统|功能|模块|评估|分析|方案/i;
 const IMP_CHITCHAT = /^(哈哈+|嗯+|好的?|ok|okay|谢谢|收到|明白|6+|👍|🙏|😄|😂|❤️)\s*[!！。.~]*$/i;
 
 // imp 评分逻辑（文档化，P1 可校准）
@@ -239,6 +235,7 @@ const IMP_CHITCHAT = /^(哈哈+|嗯+|好的?|ok|okay|谢谢|收到|明白|6+|�
 // 加成:
 //   +0.30 含决策词（决定/确认/最终方案/agreed 等）
 //   +0.25 含待办/提醒词（todo/下一步/记得/别忘了 等）
+//   +0.12 含技术/分析词（优化/架构/代码/bug/修复/评估/方案 等）
 //   +0.10 含数字+单位（元/块/天/小时/月/年/%）
 //   +0.05 以问号结尾（提问）
 //   +0.05 长度>500字符（长消息信息量大）
@@ -250,6 +247,8 @@ function importanceOf(role, text) {
   if (!t) return 0;
   if (IMP_CHITCHAT.test(t)) return 0.1;
   let score = role === 'user' ? 0.35 : 0.3;
+  // 技术/分析类：先加权（避免被后续决策/todo覆盖）
+  if (IMP_TECH.test(t))     score += 0.12;
   if (IMP_DECISION.test(t)) score += 0.3;
   if (IMP_TODO.test(t))     score += 0.25;
   if (IMP_FACT.test(t))     score += 0.1;
@@ -540,9 +539,31 @@ function archiveOld() {
 
 const TODO_PATTERNS = [
   /(?:待办|TODO|FIXME)[：:]\s*(.+)/gi,
-  /(?:提醒我|记得|别忘了)[：:,，]?\s*([^。\n]{4,60})/g,
+  /(?:提醒我|别忘了)[：:,，]?\s*([^。\n]{8,80})/g,
   /(?:下一步|计划)[：:]\s*(.+)/gi,
 ];
+
+// 待办噪音过滤：匹配这些模式的片段不应当作待办
+const TODO_NOISE = [
+  /^[，,。.、！!？?]+$/,
+  /^[的了吧吗呢啊哦呀]+$/,
+  /^[0-9a-f]{8}-[0-9a-f]{4}/i,
+  /^(很多|一些|这个|那个|这些|那些|什么|怎么|为什么)/,
+  /[,，]"$/,
+  /[）\)】」]$/,
+  /^(天地|宇宙|万物|世间|人生)/,
+];
+
+function isTodoNoise(text) {
+  if (text.length < 8) return true; // 至少 8 字符（约 4 个中文词）
+  // 纯标点/虚词
+  if (/^[，,。.、！!？?；;：:…""''\s]+$/.test(text)) return true;
+  // 匹配噪音模式
+  for (const pat of TODO_NOISE) {
+    if (pat.test(text)) return true;
+  }
+  return false;
+}
 
 function loadTodos() {
   try { return JSON.parse(fs.readFileSync(TODOS_FILE, 'utf8')); } catch { return []; }
@@ -571,7 +592,7 @@ function extractTodosFromText(text, src) {
     let m;
     while ((m = pat.exec(text)) !== null) {
       const item = m[1].trim();
-      if (item.length >= 2 && item.length <= 120 && !found.includes(item)) found.push(item);
+      if (!isTodoNoise(item) && item.length <= 120 && !found.includes(item)) found.push(item);
       if (found.length > 20) break;
     }
   }
@@ -945,6 +966,7 @@ function autoConsolidate(opts = {}) {
 
   s.lastConsolidateTs = block.lastTs;
   s.lastConsolidateAt = nowIso();
+  s.lastSignalAt = nowIso();  // v3-lite: consolidate 替代 signal
   s.autoConsolidations = (s.autoConsolidations || 0) + 1;
   saveState(s);
   try { appendDevLog(`自动整合 ${msgs.length} 条 → medium/${today()}.md`); } catch {}
@@ -2045,6 +2067,24 @@ function cmdCleanup(opts) {
     }
   }
 
+  // 7. 索引 devlog 压缩（只保留最近 20 条）
+  if (!dryRun) {
+    try {
+      const idxText = fs.readFileSync(INDEX_FILE, 'utf8');
+      const ds = idxText.indexOf('<!-- devlog:start -->');
+      const de = idxText.indexOf('<!-- devlog:end -->');
+      if (ds > 0 && de > ds) {
+        const lines = idxText.slice(ds, de).split('\n').filter(l => l.trim().startsWith('| 20'));
+        if (lines.length > 20) {
+          const newBlock = '<!-- devlog:start -->\n' + lines.slice(0, 20).join('\n') + '\n<!-- devlog:end -->';
+          const newIdx = idxText.slice(0, ds) + newBlock + idxText.slice(de + '<!-- devlog:end -->'.length);
+          fs.writeFileSync(INDEX_FILE, newIdx);
+          stat.details.push({ action: 'pruned', file: 'memory/index/index.md', removed: lines.length - 20, kept: 20, reason: 'devlog 压缩到 20 条' });
+        }
+      }
+    } catch {}
+  }
+
   out({
     cleanup: true, dryRun,
     deletedFiles: stat.deletedFiles, freedBytes: stat.freedBytes,
@@ -2110,7 +2150,7 @@ function compressForStorage(text) {
 }
 
 // ============================================================
-// v2 配置管理
+// v3 配置管理
 // ============================================================
 
 function cmdConfig(opts) {
@@ -2152,14 +2192,26 @@ function cmdConfig(opts) {
 // ============================================================
 
 function truncateRawFiles() {
-  const stat = { trimmed: 0, freedLines: 0 };
+  const stat = { trimmed: 0, freedLines: 0, rescued: 0 };
   for (const f of fs.readdirSync(D.shortRaw)) {
     if (!f.endsWith('.jsonl')) continue;
     const fp = path.join(D.shortRaw, f);
     const lines = fs.readFileSync(fp, 'utf8').split('\n').filter(l => l.trim());
     if (lines.length <= MAX_RAW_LINES_PER_DAY) continue;
-    // 保留高重要性行 + 最后 N 行的并集
     const parsed = lines.map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+    // 极高重要性消息（imp ≥ 0.7）：截断前先存入中期摘要，防止原文永久丢失
+    const veryHigh = parsed.filter(p => (p.imp || 0) >= 0.7);
+    if (veryHigh.length > 0) {
+      const medFile = path.join(D.medium, f.replace('.jsonl', '.md'));
+      let existing = '';
+      try { existing = fs.readFileSync(medFile, 'utf8'); } catch {}
+      const snippet = veryHigh.map(m =>
+        `- [HIGH ${m.ts || ''}] (${m.role}) ${String(m.text || '').slice(0, 200)}`
+      ).join('\n');
+      fs.writeFileSync(medFile, (existing.trimEnd() + '\n\n## 截断保护\n' + snippet + '\n').trimStart());
+      stat.rescued += veryHigh.length;
+    }
+    // 保留高重要性行 + 最后 N 行
     const hiImp = parsed.filter(p => (p.imp || 0) >= 0.5);
     const tail = parsed.slice(-Math.floor(MAX_RAW_LINES_PER_DAY / 2));
     const keep = new Map();
@@ -2250,13 +2302,6 @@ function cmdRecord(role, text) {
   s.lastMessageAt = nowIso();
   if (role === 'user') {
     s.turns++;
-    const isShortSignal = s.turns % SHORT_THRESHOLD === 0;
-    const isMediumSignal = s.turns % MEDIUM_THRESHOLD === 0;
-    if (isShortSignal || isMediumSignal) {
-      s.lastSignalAt = nowIso();
-      const signalType = isMediumSignal ? 'medium' : 'short';
-      sendSignal(s.turns, signalType);
-    }
   }
   saveState(s);
   // 每次落盘顺带补录转录里的消息 + 索引补全（增量，开销小）
@@ -2276,7 +2321,7 @@ function cmdStatus() {
   s.nextSignalIn = Math.min(s.nextShortIn, s.nextMediumIn);
   s.root = ROOT;
   s.engineDir = ENGINE_DIR;
-  s.version = 'Mnemosyne v2';
+  s.version = 'Mnemosyne v3-lite';
   // 附加 v5 状态
   const vec = loadVectors();
   s.semanticEnabled = s.semanticEnabled || false;
@@ -2308,7 +2353,6 @@ function cmdSignal() {
   const s = loadState();
   s.lastSignalAt = nowIso();
   saveState(s);
-  sendSignal(s.turns, 'medium', () => out({ signalSent: true, turns: s.turns }));
 }
 
 function cmdInit() {
@@ -2316,7 +2360,8 @@ function cmdInit() {
   out({ initialized: true, root: ROOT, dirs: D });
 }
 
-function cmdSync() {
+function cmdSync(opts = {}) {
+  const quick = opts.quick || false;
   // 0. 数据迁移：如有旧 conversations/ 目录，移动到 raw/
   const oldConv = path.join(path.dirname(D.shortRaw), 'conversations');
   if (fs.existsSync(oldConv) && D.shortRaw !== oldConv) {
@@ -2331,69 +2376,53 @@ function cmdSync() {
     } catch {}
   }
 
-  // 0. raw 截断 + P1 补偿扫描
-  let rawTrimmed = null;
-  try { rawTrimmed = truncateRawFiles(); } catch {}
-  let compensation = null;
-  try { compensation = compensationScan(); } catch {}
-  // 1. 转录补录 → raw
-  const synced = syncTranscripts();
-  // 2. 索引补全
-  const reindexed = reindex();
-  // 3. 归档检查
-  let archived = { shortArchived: 0, mediumArchived: 0 };
-  const s = loadState();
-  if (!s.lastArchiveCheckAt || Date.now() - new Date(s.lastArchiveCheckAt).getTime() > ARCHIVE_INTERVAL_MS) {
-    s.lastArchiveCheckAt = nowIso();
-    saveState(s);
-    try { archived = archiveOld(); } catch {}
+  // 0. raw 截断 + P1 补偿扫描（quick 模式跳过——这些是以天为单位的操作）
+  let rawTrimmed = null, compensation = null;
+  if (!quick) {
+    try { rawTrimmed = truncateRawFiles(); } catch {}
+    try { compensation = compensationScan(); } catch {}
   }
-  // 4. v5.1 P0：工作记忆
+  // 1. 转录补录 → raw（核心，quick 保留）
+  const synced = syncTranscripts();
+  // 2. 索引补全（核心，quick 保留）
+  const reindexed = reindex();
+  // 3. 归档检查（quick 跳过）
+  let archived = { shortArchived: 0, mediumArchived: 0 };
+  if (!quick) {
+    const s = loadState();
+    if (!s.lastArchiveCheckAt || Date.now() - new Date(s.lastArchiveCheckAt).getTime() > ARCHIVE_INTERVAL_MS) {
+      s.lastArchiveCheckAt = nowIso();
+      saveState(s);
+      try { archived = archiveOld(); } catch {}
+    }
+  }
+  // 4. 工作记忆（核心，quick 保留）
   let working = null;
   try { working = buildWorkingMemory(); } catch {}
-  // 5. v5.1 P0：可注入摘要
+  // 5. 可注入摘要（核心，quick 保留）
   let inject = null;
   try { inject = buildInjectableSummary(); } catch {}
-  // 6. 中期摘要实时检测
+  // 6. 中期摘要实时检测（quick 跳过——consolidate 已覆盖）
   let mediumNeeded = false;
-  try { mediumNeeded = checkMediumNeeded(); } catch {}
-  // 6.5 v5.2：自动整合（无需提醒，自动写中期摘要 + 索引）
+  if (!quick) {
+    try { mediumNeeded = checkMediumNeeded(); } catch {}
+  }
+  // 6.5 自动整合（核心，quick 保留）
   let consolidated = null;
   try { consolidated = autoConsolidate(); } catch {}
-  // 7. 长期事实建议
-  let suggestions = 0;
-  try { suggestions = suggestLongTermFacts().length; } catch {}
-  // 8. TODO 提取
-  let todoStats = null;
-  try { todoStats = extractTodos(); } catch {}
-  // v5.1 自动清理（每天一次）
-  if (!s.lastCleanupAt || Date.now() - new Date(s.lastCleanupAt).getTime() > 86400000) {
-    s.lastCleanupAt = nowIso();
-    saveState(s);
-    try { cmdCleanupSilent(); } catch {}
-  }
-  // 9. MEMORY.md 版本快照
-  let version = null;
-  try { version = snapshotMEMORY(); buildContentIndex(); } catch {}
-  // 10. 离线保护：如果超过 20 小时未蒸馏，自动补充 proposals
-  let distillCatchUp = null;
-  try {
-    const s2 = loadState();
-    const hoursSinceDistill = s2.lastDistillAt ? (Date.now() - new Date(s2.lastDistillAt).getTime()) / 3600000 : 999;
-    if (hoursSinceDistill > 20) {
-      const dp = loadDistillProposals();
-      const hasPendingDistill = dp.proposals.some(p => p.source === 'catch-up' && p.created_at > new Date(Date.now() - 86400000).toISOString());
-      if (!hasPendingDistill) {
-        const facts = suggestLongTermFacts();
-        for (const f of facts.slice(0, 5)) {
-          saveDistillProposal({ section: '重要事件', content: f.candidate, source: 'catch-up', confidence: f.confidence });
-        }
-        s2.lastDistillAt = nowIso();
-        saveState(s2);
-        distillCatchUp = facts.length;
-      }
+  // 7-9. 长期建议 + TODO + 清理 + 快照（quick 跳过）
+  let suggestions = 0, todoStats = null, version = null;
+  if (!quick) {
+    try { todoStats = extractTodos(); } catch {}
+    const sc = loadState();
+    if (!sc.lastCleanupAt || Date.now() - new Date(sc.lastCleanupAt).getTime() > 86400000) {
+      sc.lastCleanupAt = nowIso();
+      saveState(sc);
+      try { cmdCleanupSilent(); } catch {}
     }
-  } catch {}
+    try { version = snapshotMEMORY(); buildContentIndex(); } catch {}
+  }
+  // 10. 离线保护（quick 跳过——避免大批量 proposals）
 
   out({
     synced, reindexed, archived,
@@ -2401,17 +2430,16 @@ function cmdSync() {
     inject: inject ? { topics: inject.topics, facts: inject.facts.length, decisions: inject.decisions.length, confidence: inject.confidence } : null,
     mediumNeeded, consolidated, suggestions, todos: todoStats,
     rawTrimmed, compensation: compensation ? compensation.length : 0, compensationIssues: compensation,
-    version: version ? version.version : null, at: nowIso(),
+    version: version ? version.version : null, at: nowIso(), quick,
     distillCatchUp,
   });
-  try { autoDevLog(synced, inject, working); } catch {}
 }
 
 function cmdReindex() {
   out(reindex());
 }
 
-// v2: 索引进化日志 — 记录开发迭代，高频更新
+// v3: 索引进化日志 — 记录开发迭代，高频更新
 const DEVLOG_MARKER = '<!-- devlog:start -->';
 const DEVLOG_END = '<!-- devlog:end -->';
 
@@ -2450,26 +2478,8 @@ function cmdDevLog(opts) {
   out({ total: lines.length, recent: lines.slice(-10) });
 }
 
-// 在 sync 中自动记录变更到 daily note + devlog
-function autoDevLog(synced, inject, working) {
-  const parts = [];
-  if (synced && synced.added > 0) parts.push(`转录补录 ${synced.added} 条`);
-  if (inject && inject.facts > 0) parts.push(`生成摘要 ${inject.facts} 事实`);
-  if (working && working.task_state === 'in_progress') parts.push(`任务: ${working.current_task.slice(0,30)}`);
-  if (parts.length) appendDevLog(parts.join(' | '));
-  // 同时追加到 daily note（短期记忆时间轴）
-  try {
-    const dailyNote = path.join(MEM, today() + '.md');
-    const ts = new Date().toTimeString().slice(0,5);
-    const entry = `- ${ts} sync: ${parts.length ? parts.join('；') : '无变更'}\n`;
-    if (!fs.existsSync(dailyNote) || !fs.readFileSync(dailyNote,'utf8').includes(entry.trim())) {
-      fs.appendFileSync(dailyNote, entry);
-    }
-  } catch {}
-}
-
 // ============================================================
-// P2 全量索引重建
+// P2 全量索引重建（lite 版保留但仅作为内部函数，无 CLI 入口）
 // ============================================================
 
 function cmdReindexAll(opts) {
@@ -2781,6 +2791,14 @@ function cmdHealth() {
 
   if (!s.enabled) issues.push({ severity: 'warn', msg: '引擎已暂停自动记录' });
 
+  // Hook 健康检查：如果引擎启用但超过 2h 无新消息，hook 可能已失效
+  if (s.enabled && s.lastMessageAt) {
+    const sinceLastRecord = Date.now() - new Date(s.lastMessageAt).getTime();
+    if (sinceLastRecord > 7200000) {
+      issues.push({ severity: 'warn', msg: `超过 ${Math.round(sinceLastRecord / 3600000)}h 无新记录，hook 可能已失效` });
+    }
+  }
+
   const shortFiles = fs.readdirSync(D.short).filter(f => f.endsWith('.jsonl'));
   if (!shortFiles.length) issues.push({ severity: 'info', msg: '短期记忆目录为空' });
 
@@ -2791,10 +2809,41 @@ function cmdHealth() {
     }
   }
 
-  // v5 新增检查
+  // 语义索引检查
   const vec = loadVectors();
-  if (!vec.items.length) issues.push({ severity: 'info', msg: '语义索引为空，运行 embed 构建' });
-  else if (vec.remoteFailed) issues.push({ severity: 'warn', msg: '远端 embedding 最近失败，语义搜索使用缓存索引' });
+  if (!vec.items.length) {
+    issues.push({ severity: 'warn', msg: '语义索引为空 — 运行 embed --force 构建' });
+  } else if (vec.remoteFailed) {
+    issues.push({ severity: 'warn', msg: '远端 embedding 最近失败，语义搜索使用本地回退' });
+  }
+  // 索引新鲜度：超过 24h 未更新（有对话活动时）
+  if (vec.updatedAt && shortFiles.length > 0) {
+    const vecAge = Date.now() - new Date(vec.updatedAt).getTime();
+    if (vecAge > 86400000) {
+      issues.push({ severity: 'info', msg: '语义索引超过 24h 未更新，运行 embed 刷新' });
+    }
+  }
+
+  // 待办质量检查
+  const todos = loadTodos();
+  const noiseTodos = todos.filter(t => t.status === 'open' && isTodoNoise(t.text));
+  if (noiseTodos.length > 0) {
+    issues.push({ severity: 'warn', msg: `${noiseTodos.length} 个待办疑似噪音（${noiseTodos.map(t => '#'+t.id).join(', ')}），建议清理` });
+  }
+  if (todos.filter(t => t.status === 'open').length > 15) {
+    issues.push({ severity: 'info', msg: '待办超过 15 条，建议清理过期条目' });
+  }
+
+  // 索引 devlog 膨胀检查
+  const devlogStart = idxText.indexOf('<!-- devlog:start -->');
+  const devlogEnd = idxText.indexOf('<!-- devlog:end -->');
+  if (devlogStart > 0 && devlogEnd > devlogStart) {
+    const devlogLines = idxText.slice(devlogStart, devlogEnd).split('\n').filter(l => l.trim().startsWith('| 20'));
+    if (devlogLines.length > 25) {
+      issues.push({ severity: 'info', msg: `索引 devlog 已 ${devlogLines.length} 条，运行 cleanup --confirm 自动压缩` });
+    }
+  }
+
   if (!fs.existsSync(path.join(ROOT, '.git'))) issues.push({ severity: 'info', msg: '工作区无 git 仓库，运行 backup 初始化备份' });
 
   const score = Math.max(0, 100 - issues.filter(i => i.severity === 'warn').length * 20 - issues.filter(i => i.severity === 'info').length * 5);
@@ -2858,64 +2907,40 @@ function cmdTimeline() {
 // CLI 入口
 // ============================================================
 
-const HELP = `Mnemosyne v2 — OpenClaw 分层记忆引擎
-
-Mnemosyne（谟涅摩绪涅）：希腊记忆女神，缪斯之母
-中期+长期: 状态字段 active|candidate|disputed|superseded|archived
-memory.md: nightly distill → proposals 文件 → agent 审阅确认后写入（人工把关）
+const HELP = `Mnemosyne v3-lite — OpenClaw 精简记忆引擎
 
 用法: engine.js <command> [options]
 
-基础命令（v4 保留）:
+基础命令:
   record    --role <user|assistant> --text "内容"   记录消息
-  status                                            引擎状态（含索引/TODO/归档统计）
+  status                                            引擎状态
   enable / disable                                  启用/暂停自动记录
-  signal                                            手动触发摘要信号
   init                                              初始化目录结构
-  sync                                              转录补录 + 索引补全 + 归档 + 待办提取
-  reindex                                           扫描中期摘要块补齐索引
-  consolidate [--check | --force]                   自动整合：新对话→中期摘要块+索引（无需提醒）
-  search    --query "关键词" [--mode keyword|semantic|hybrid|recent|history]  多模式搜索
-  stats                                             统计仪表盘
+
+同步与整合:
+  sync     [--quick]                                全量/快速同步
+  consolidate [--check | --force]                   自动整合
+
+搜索:
+  search   --query "关键词" [--mode keyword|semantic|hybrid|recent|history]  多模式搜索
+
+记忆管理:
+  todos    [--add "内容" | --done <id>]             待办清单
+  embed    [--force]                                构建语义向量索引
+  reindex                                           扫描中期摘要补齐索引
+
+运维:
   health                                            健康度检查
-  save      --file "path" --text "content"          保存文件（MEMORY.md 自动版本快照）
-  export                                            导出为 tar.gz
-  timeline                                          时间轴视图
+  stats                                             统计仪表盘
+  cleanup  [--dry] [--confirm]                      清理无用文件
 
-v5 新增 — 语义智能:
-  embed     [--force]                               构建/刷新语义向量索引（远端 > 本地回退）
-  content-index    [--force]                        构建 MEMORY.md 结构化索引（关键词/实体/时间）
-
-v5 新增 — 版本 & 冲突:
-  version   [--force]                              MEMORY.md 版本快照（自动节流 1h）
-  version-history                                  查看版本历史（最近 50 个）
-  version-diff [--v1 <id> --v2 <id>]               对比两个版本的差异
-  conflict                                         检测 MEMORY.md 中可能的矛盾条目
-
-v5 新增 — 待办 & 备份:
-  todos     [--add "内容" | --done <id>]            待办清单（提取/添加/完成）
-  backup    [--msg "提交信息"]                        Git 备份记忆文件
-  backup-log                                        查看备份历史
-
-v5 新增 — 会话 & 权限:
-  sessions                                          多会话聚合视图（48h 内有效）
-  permission [--agent <id> --level read|write|admin]  查看/设置访问权限
-  permission --default read|write                   设置默认权限级别
-  config    [--get key | --set key --value val | --reset]  查看/修改配置
-  devlog    [--log "事件"]                          开发日志（查看/追加迭代记录）
-  cleanup   [--dry] [--confirm]                     清理无用文件（inject/日志/过期建议）
-  imp-calibrate --date "YYYY-MM-DD" --line <N> --imp 0.8  手动校准消息重要性（P1）
-  reindex-all [--force]                              全量索引重建（语义+内容+索引+TODO）
-  restore    [--list | --id <vid> | --from latest]   从版本快照恢复 MEMORY.md
-  distill-proposals [--list | --apply <id>]         查看/审阅并应用长期记忆候选建议
-  distill-reject --id <id> [--reason "..."]        拒绝某个候选建议
-
-查询模式说明:
-  search --mode keyword   → 关键词精确+模糊匹配（默认）
-  search --mode semantic  → 语义向量搜索（需先 embed）
-  search --mode hybrid    → 关键词 + 语义融合排序
-  search --mode recent    → 偏重短期记忆权重
-  search --mode history   → 偏重长期记忆 & MEMORY.md 权重`;
+查询模式:
+  --mode keyword   → 关键词精确+模糊匹配（默认）
+  --mode semantic  → 语义向量搜索（需先 embed）
+  --mode hybrid    → 关键词 + 语义融合排序
+  --mode recent    → 偏重短期记忆权重
+  --mode history   → 偏重长期记忆权重
+`;
 
 function main() {
   const [cmd, ...rest] = process.argv.slice(2);
@@ -2924,7 +2949,7 @@ function main() {
     if (rest[i].startsWith('--')) {
       const key = rest[i].slice(2);
       // 布尔开关型参数（--force / --msg 后跟值）
-      opts[key] = (rest[i + 1] !== undefined && !rest[i + 1].startsWith('--')) ? rest[++i] : '';
+      opts[key] = (rest[i + 1] !== undefined && !rest[i + 1].startsWith('--')) ? rest[++i] : true;
     }
   }
   const has = (k) => Object.prototype.hasOwnProperty.call(opts, k);
@@ -2932,49 +2957,19 @@ function main() {
   switch (cmd) {
     case 'record':   cmdRecord(opts.role || 'user', opts.text || ''); break;
     case 'status':   cmdStatus(); break;
-    case 'enable':   cmdSetEnabled(true); break;
-    case 'disable':  cmdSetEnabled(false); break;
-    case 'signal':   cmdSignal(); break;
+    case 'enable':   { let s=loadState(); s.enabled=true; saveState(s); out({enabled:true}); } break;
+    case 'disable':  { let s=loadState(); s.enabled=false; saveState(s); out({enabled:false}); } break;
     case 'init':     cmdInit(); break;
-    case 'sync':     cmdSync(); break;
+    case 'sync':     cmdSync(opts); break;
     case 'reindex':  cmdReindex(); break;
     case 'consolidate': out(autoConsolidate({ force: has('force'), check: has('check') })); break;
     case 'search':   cmdSearch(opts.query, opts).catch(e => { console.error(e.message); process.exit(1); }); break;
     case 'stats':    cmdStats(); break;
     case 'health':   cmdHealth(); break;
-    case 'save':     cmdSave(opts.file, opts.text); break;
-    case 'export':   cmdExport(); break;
-    case 'timeline': cmdTimeline(); break;
     case 'embed':    cmdEmbed(opts).catch(e => { console.error(e.message); process.exit(1); }); break;
     case 'todos':    cmdTodos(opts); break;
-    case 'backup':   cmdBackup(opts); break;
-    case 'backup-log': cmdBackupLog(); break;
-    case 'sessions': cmdSessions(); break;
-    case 'version':  cmdVersion(opts); break;
-    case 'version-history': cmdVersionHistory(); break;
-    case 'version-diff': cmdVersionDiff(opts); break;
-    case 'conflict': cmdConflict(); break;
-    case 'content-index': cmdContentIndex(opts); break;
-    case 'permission': cmdPermission(opts); break;
-    case 'config':    cmdConfig(opts); break;
-    case 'devlog':    cmdDevLog(opts); break;
     case 'cleanup':   cmdCleanup(opts); break;
-    case 'reindex-all': cmdReindexAll(opts); break;
-    case 'restore':    cmdRestore(opts); break;
-    case 'distill-proposals': cmdDistillProposals(opts); break;
-    case 'distill-reject': cmdDistillReject(opts); break;
-    case 'imp-calibrate': cmdImpCalibrate(opts); break;
-    case 'record-raw': cmdRecordRaw(opts); break;
-    case 'save-distill': {
-      const entry = { section: opts.section || '重要事件', content: opts.content || '', source: opts.source || 'nightly-distill', confidence: parseFloat(opts.confidence) || 0.5 };
-      if (!entry.content) { console.error('--content required'); process.exit(1); }
-      const count = saveDistillProposal(entry);
-      out({ saved: true, total: count });
-      break;
-    }
-    default:
-      console.error(HELP);
-      process.exit(cmd ? 1 : 0);
+    default:         console.error('未知命令: ' + cmd + '\\n' + HELP); process.exit(1);
   }
 }
 

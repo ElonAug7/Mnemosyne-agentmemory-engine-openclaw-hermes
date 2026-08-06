@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Mnemosyne v2 · 小爪记忆系统</title>
+<title>Mnemosyne v3-lite · 小爪记忆系统</title>
 <style>
 :root{--bg:#0f1319;--card:#181f29;--card2:#1e2733;--fg:#e6e9ef;--dim:#8b95a5;--acc:#4da3ff;--ok:#3ecf8e;--warn:#f5a623;--err:#e06c5c;--line:#2a323e}
 *{box-sizing:border-box}
@@ -75,8 +75,8 @@ pre{white-space:pre-wrap;word-break:break-word;font-size:13px;background:#10151c
 <header>
   <img src="/api/logo" style="height:36px;vertical-align:middle;border-radius:6px" alt="小爪">
   <div>
-    <h1>Mnemosyne <span style="font-size:11px;color:var(--dim)">v2 · 小爪记忆系统控制台</span></h1>
-    <div class="sub">认知记忆引擎 · 本地化 · 可移植 · 零依赖</div>
+    <h1>Mnemosyne <span style="font-size:11px;color:var(--dim)">v3-lite · 精简版</span></h1>
+    <div class="sub">精简记忆引擎 · 核心功能 · 轻量快速</div>
   </div>
   <div class="spacer"></div>
   <span class="badge on" id="badge" title="点击切换开关">● 加载中</span>
@@ -86,15 +86,12 @@ pre{white-space:pre-wrap;word-break:break-word;font-size:13px;background:#10151c
   <div class="panel">
     <div class="stats" id="stats"></div>
     <div class="toolbar">
-      <button class="btn acc" id="btn-signal">立即生成摘要</button>
+      
       <button class="btn" id="btn-refresh">刷新</button>
-      <button class="btn" id="btn-trash" onclick="showTrash()">回收站</button>
-      <button class="btn" id="btn-suggest" onclick="showSuggestions()" style="color:var(--warn)">建议清理</button>
+      
+      
       <label style="font-size:12px;color:var(--dim);display:flex;align-items:center;gap:4px">
-        <input type="checkbox" id="raw-record" checked onchange="toggleRawRecord()"> 保存对话记录
-      </label>
-      <label style="font-size:12px;color:var(--dim);display:flex;align-items:center;gap:4px">
-        <input type="checkbox" id="auto-refresh" checked> 自动刷新
+        <input type="checkbox" id="raw-record" checked> 保存对话记录
       </label>
     </div>
     <div class="toolbar">
@@ -136,10 +133,24 @@ function toast(msg, isErr) {
   t._timer = setTimeout(() => { t.style.display = "none"; }, 4000);
 }
 
-async function api(p) {
+async function api(p, body) {
+  const opts = { method: 'POST', headers: { 'content-type': 'application/json' } };
+  if (body) opts.body = JSON.stringify(body);
+  else opts.body = '{}';
+  const r = await fetch(p, opts);
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return r.json();
+}
+
+// 兼容：少数需要 GET 的场景
+async function apiGet(p) {
   const r = await fetch(p);
   if (!r.ok) throw new Error("HTTP " + r.status);
   return r.json();
+}
+
+async function apiPost(url, body) {
+  return api(url, body || {});
 }
 
 // ---------- 极简 Markdown 渲染（先转义再替换，防注入） ----------
@@ -262,7 +273,7 @@ function fmtSize(b) { return b < 1024 ? b + " B" : b < 1048576 ? (b / 1024).toFi
 async function deleteFile(p) {
   if (!confirm("确定将 " + p + " 移入回收站？\n15天后自动清除，期间可还原。")) return;
   try {
-    const r = await fetch("/api/delete?p=" + encodeURIComponent(p)).then(r => r.json());
+    const r = await apiPost("/api/delete", {p: p});
     if (r.trashed) {
       toast("已移入回收站");
       allFiles = await api("/api/files");
@@ -301,7 +312,7 @@ async function showSuggestions() {
 async function deleteSuggested(file, btn) {
   btn.textContent = "..."; btn.disabled = true;
   try {
-    var r = await fetch("/api/delete?p=" + encodeURIComponent(decodeURIComponent(file))).then(function(r){ return r.json(); });
+    var r = await apiPost("/api/delete", {p: decodeURIComponent(file)});
     if (r.trashed) { btn.textContent = "OK"; btn.style.color = "var(--ok)"; }
     else { btn.textContent = "ERR"; btn.style.color = "var(--err)"; toast("删除失败: " + (r.error||""), true); }
   } catch(e) { btn.textContent = "ERR"; btn.disabled = false; }
@@ -314,7 +325,7 @@ async function deleteAllSuggested() {
   for (var i of r.suggestions) {
     if (i.safe) {
       try { 
-        var dr = await fetch("/api/delete?p=" + encodeURIComponent(i.file)).then(function(r){ return r.json(); });
+        var dr = await apiPost("/api/delete", {p: i.file});
         if (dr.trashed) count++;
       } catch(e) {}
     }
@@ -346,7 +357,7 @@ async function showTrash() {
 }
 async function restoreFile(id) {
   try {
-    var r = await fetch("/api/trash/restore?id=" + id).then(function(r){ return r.json(); });
+    var r = await apiPost("/api/trash/restore", {id: id});
     if (r.restored) { toast("已还原"); showTrash(); allFiles = await api("/api/files"); renderFiles(); }
     else { toast("还原失败", true); }
   } catch(e) { toast("还原失败", true); }
@@ -354,7 +365,7 @@ async function restoreFile(id) {
 async function purgeFile(id) {
   if (!confirm("确定彻底删除？此操作不可撤销！")) return;
   try {
-    var r = await fetch("/api/trash/purge?id=" + id).then(function(r){ return r.json(); });
+    var r = await apiPost("/api/trash/purge", {id: id});
     if (r.purged) { toast("已彻底删除"); showTrash(); }
     else { toast("失败", true); }
   } catch(e) { toast("失败", true); }
@@ -436,7 +447,7 @@ async function loadStatus() {
       '<span class="stat"><b>' + st.turns + '</b><span>累计轮次</span></span>' +
       '<span class="stat"><b>' + st.totalMessages + '</b><span>消息总数</span></span>' +
       '<span class="stat"><b>' + st.nextSignalIn + '</b><span>距下次摘要信号</span></span>' +
-      (st.lastSignalAt ? '<span class="stat"><b>' + new Date(st.lastSignalAt).toLocaleTimeString("zh-CN") + '</b><span>上次信号</span></span>' : '');
+      (st.lastSignalAt ? '<span class="stat"><b>' + new Date(st.lastSignalAt).toLocaleTimeString("zh-CN") + '</b><span>上次整合</span></span>' : '');
   } catch (e) { toast("状态读取失败: " + e.message, true); }
 }
 
@@ -464,41 +475,17 @@ $("badge").addEventListener("click", async () => {
   loadAll();
 });
 
-async function toggleRawRecord() {
-  const cb = $("raw-record"); if (!cb) return;
-  const on = cb.checked;
-  await api(on ? "/api/record-raw-on" : "/api/record-raw-off");
-  toast(on ? "对话记录已开启" : "对话记录已关闭（其他功能正常）");
-}
+// lite 版移除：toggleRawRecord、btn-signal、auto-refresh 功能已裁剪
 
-$("btn-signal").addEventListener("click", async () => {
-  try { await api("/api/signal"); toast("摘要信号已发送，小爪会尽快生成摘要块"); }
-  catch (e) { toast("发送失败: " + e.message, true); }
-});
 $("btn-refresh").addEventListener("click", () => { toast("已刷新"); loadAll(); });
 $("search").addEventListener("input", renderFiles);
-setInterval(() => { if ($("auto-refresh").checked) loadAll(); }, 15000);
 
 loadAll();
 </script>
 
 
-<div id="suggest-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.85);z-index:1000;align-items:center;justify-content:center" onclick="if(event.target===this)this.style.display='none'">
-<div style="background:var(--card);border-radius:12px;padding:20px;max-width:700px;width:90%;max-height:80vh;overflow:auto" onclick="event.stopPropagation()">
-<h3 style="margin:0 0 4px">建议清理 <span style="font-size:12px;color:var(--dim)">（安全项可直接删除）</span></h3>
-<div style="font-size:11px;color:var(--dim);margin-bottom:12px">共计 <b id="suggest-count">-</b> 项，可释放 <b id="suggest-size">-</b></div>
-<div id="suggest-list" style="max-height:50vh;overflow:auto"></div>
-<div style="margin-top:12px;display:flex;gap:8px">
-<button class="btn" onclick="document.getElementById('suggest-modal').style.display='none'">关闭</button>
-<button class="btn" style="color:var(--ok)" onclick="deleteAllSuggested()">全部安全删除</button>
-</div></div></div>
-<div id="trash-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.85);z-index:1000;align-items:center;justify-content:center" onclick="if(event.target===this)closeTrash()">
-<div style="background:var(--card);border-radius:12px;padding:20px;max-width:700px;width:90%;max-height:80vh;overflow:auto" onclick="event.stopPropagation()">
-<h3 style="margin:0 0 12px">回收站 <span style="font-size:12px;color:var(--dim)">（保留15天，到期自动清除）</span></h3>
-<div id="trash-list" style="max-height:50vh;overflow:auto"></div>
-<div style="margin-top:12px;display:flex;gap:8px">
-<button class="btn" onclick="closeTrash()">关闭</button>
-<button class="btn" style="color:var(--err)" onclick="if(confirm('确定清空回收站？所有文件将被永久删除！')){fetch('/api/trash').then(r=>r.json()).then(d=>{if(d.items)d.items.forEach(i=>fetch('/api/trash/purge?id='+i.trashId));toast('已清空');showTrash()})}">清空回收站</button>
-</div></div></div>
+
+
+<div style="position:fixed;bottom:8px;right:12px;font-size:10px;color:var(--dim);opacity:0.5;z-index:1">v3-lite</div>
 </body>
 </html>

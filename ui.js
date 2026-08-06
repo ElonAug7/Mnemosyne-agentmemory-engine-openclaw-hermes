@@ -1,12 +1,17 @@
 #!/usr/bin/env node
 /**
- * memory-ui — 记忆系统本地管理界面 v2
+ * memory-ui — 记忆系统本地管理界面 v3-lite
  *
  * 纯 Node.js（无第三方依赖），监听 127.0.0.1:8765（仅本机访问）。
  * 功能：
  *   - 浏览所有记忆文件（Markdown 渲染 / JSONL 对话气泡视图 / 原文切换）
  *   - 文件搜索、返回键、下载原文
  *   - 引擎状态、一键开关自动记录、手动触发摘要信号
+ *
+ * v3-lite 精简版：
+ *   - 写操作（delete/restore/purge/backup/enable 等）强制 POST
+ *   - CSRF 保护：POST 请求校验 Origin/Referer
+ *   - /api/delete 复用 safePath() 白名单
  */
 'use strict';
 
@@ -18,6 +23,7 @@ const { execFile } = require('child_process');
 const ROOT = process.env.OPENCLAW_WORKSPACE || path.join(require('os').homedir(), '.openclaw', 'workspace');
 const PORT = parseInt(process.env.MEMORY_UI_PORT || '8765', 10);
 const HOST = '127.0.0.1';   // 只监听本机，安全
+const TRASH_DIR = path.join(ROOT, 'memory', '.trash');
 
 // 允许浏览的路径（白名单，防目录穿越）
 const ALLOWED = [
@@ -110,6 +116,54 @@ function runEngine(args) {
   });
 }
 
+// POST body 解析（JSON + URL-encoded）
+function parseBody(req) {
+  return new Promise((resolve) => {
+    const chunks = [];
+    req.on('data', c => chunks.push(c));
+    req.on('end', () => {
+      const raw = Buffer.concat(chunks).toString('utf8');
+      try { return resolve(JSON.parse(raw)); } catch {}
+      const params = new URLSearchParams(raw);
+      const obj = {};
+      for (const [k, v] of params) obj[k] = v;
+      resolve(obj);
+    });
+    req.on('error', () => resolve({}));
+  });
+}
+
+// CSRF 保护：校验 Origin/Referer 仅允许本地来源
+function checkCSRF(req) {
+  const origin = req.headers.origin || req.headers.referer || '';
+  if (!origin) return true; // 无 Origin 的请求放行（curl/脚本调用）
+  // 只允许本地来源
+  try {
+    const u = new URL(origin);
+    return u.hostname === '127.0.0.1' || u.hostname === 'localhost' || u.hostname === '[::1]';
+  } catch { return false; }
+}
+
+// 便捷：POST 端点包装器
+// fn(body, req) 返回响应对象或 null（null=不响应，由外层处理）
+async function handlePost(req, res, fn) {
+  if (req.method !== 'POST') {
+    res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' });
+    return res.end(JSON.stringify({ error: 'Method not allowed — 请使用 POST' }));
+  }
+  if (!checkCSRF(req)) {
+    res.writeHead(403, { 'content-type': 'application/json; charset=utf-8' });
+    return res.end(JSON.stringify({ error: 'CSRF check failed — 来源不被允许' }));
+  }
+  try {
+    const body = await parseBody(req);
+    await fn(body, req);
+  } catch (e) {
+    res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ error: String(e.message || e) }));
+  }
+}
+
 
 // P2: Markdown 安全渲染 — 过滤 HTML/XSS
 function sanitizeHTML(text) {
@@ -134,18 +188,15 @@ const server = http.createServer(async (req, res) => {
 
   try {
     if (url.pathname === '/') {
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache, no-store, must-revalidate' });
       return res.end(PAGE);
     }
+
+    // ═══════ GET（只读）═══════
     if (url.pathname === '/api/status') {
       const r = await runEngine(['status']);
       return json(r.ok ? JSON.parse(r.out) : { error: r.err });
     }
-    if (url.pathname === '/api/enable') { await runEngine(['enable']); return json({ enabled: true }); }
-    if (url.pathname === '/api/disable') { await runEngine(['disable']); return json({ enabled: false }); }
-    if (url.pathname === '/api/record-raw-on') { await runEngine(['record-raw', '--enable']); return json({ recordRaw: true }); }
-    if (url.pathname === '/api/record-raw-off') { await runEngine(['record-raw', '--disable']); return json({ recordRaw: false }); }
-    if (url.pathname === '/api/signal') { const r = await runEngine(['signal']); return json(r); }
     if (url.pathname === '/api/files') return json(listFiles());
     if (url.pathname === '/api/file') {
       const p = url.searchParams.get('p') || '';
@@ -164,47 +215,18 @@ const server = http.createServer(async (req, res) => {
       });
       return res.end(data);
     }
-    // --- v5 新 API ---
     if (url.pathname === '/api/search') {
       const q = url.searchParams.get('q') || '';
       const mode = url.searchParams.get('mode') || 'keyword';
       const r = await runEngine(['search', '--query', q, '--mode', mode]);
       return json(r.ok ? JSON.parse(r.out) : { error: r.err });
     }
-    if (url.pathname === '/api/embed') {
-      const force = url.searchParams.get('force');
-      const args = ['embed'];
-      if (force !== null) args.push('--force');
-      const r = await runEngine(args);
-      return json(r.ok ? JSON.parse(r.out) : { error: r.err });
-    }
     if (url.pathname === '/api/todos') {
       const r = await runEngine(['todos']);
       return json(r.ok ? JSON.parse(r.out) : { error: r.err });
     }
-    if (url.pathname === '/api/todos/add') {
-      const text = url.searchParams.get('text') || '';
-      const r = await runEngine(['todos', '--add', text]);
-      return json(r.ok ? JSON.parse(r.out) : { error: r.err });
-    }
-    if (url.pathname === '/api/todos/done') {
-      const id = url.searchParams.get('id') || '';
-      const r = await runEngine(['todos', '--done', id]);
-      return json(r.ok ? JSON.parse(r.out) : { error: r.err });
-    }
-    if (url.pathname === '/api/backup') {
-      const msg = url.searchParams.get('msg');
-      const args = ['backup'];
-      if (msg) args.push('--msg', msg);
-      const r = await runEngine(args);
-      return json(r.ok ? JSON.parse(r.out) : { error: r.err });
-    }
     if (url.pathname === '/api/backup-log') {
       const r = await runEngine(['backup-log']);
-      return json(r.ok ? JSON.parse(r.out) : { error: r.err });
-    }
-    if (url.pathname === '/api/version') {
-      const r = await runEngine(['version', '--force']);
       return json(r.ok ? JSON.parse(r.out) : { error: r.err });
     }
     if (url.pathname === '/api/version-history') {
@@ -224,10 +246,6 @@ const server = http.createServer(async (req, res) => {
       const r = await runEngine(['conflict']);
       return json(r.ok ? JSON.parse(r.out) : { error: r.err });
     }
-    if (url.pathname === '/api/content-index') {
-      const r = await runEngine(['content-index']);
-      return json(r.ok ? JSON.parse(r.out) : { error: r.err });
-    }
     if (url.pathname === '/api/sessions') {
       const r = await runEngine(['sessions']);
       return json(r.ok ? JSON.parse(r.out) : { error: r.err });
@@ -236,8 +254,6 @@ const server = http.createServer(async (req, res) => {
       const r = await runEngine(['permission']);
       return json(r.ok ? JSON.parse(r.out) : { error: r.err });
     }
-
-    // --- P2 建议清理 ---
     if (url.pathname === '/api/cleanup-suggestions') {
       const suggestions = [];
       const now = Date.now();
@@ -344,41 +360,112 @@ const server = http.createServer(async (req, res) => {
       return json({ suggestions, total: suggestions.length, freedEstimate: suggestions.reduce((s, i) => s + (i.size || 0), 0) });
     }
 
-    // --- 回收站系统 ---
-    const TRASH_DIR = path.join(ROOT, 'memory', '.trash');
-
-    if (url.pathname === '/api/delete') {
-      const p = url.searchParams.get('p') || '';
-      const full = path.resolve(ROOT, p);
-      const safe = ALLOWED.some(a => {
-        const norm = path.normalize(a);
-        if (full === norm) return true;
-        try { return fs.statSync(norm).isDirectory() && full.startsWith(norm + path.sep); } catch { return false; }
+    // ═══════ POST（写操作 — CSRF 保护）═══════
+    if (url.pathname === '/api/enable') {
+      return handlePost(req, res, async () => {
+        await runEngine(['enable']);
+        json({ enabled: true });
       });
-      if (!safe || !fs.existsSync(full)) return json({ deleted: false, error: '路径不安全或不存在' });
-      const banned = ['MEMORY.md', 'MEMORY-PROTOCOL.md', 'state.json', 'index.md'];
-      if (banned.includes(path.basename(full))) return json({ deleted: false, error: '核心文件不允许删除' });
-      // 目录：仅允许删除空目录
-      if (fs.statSync(full).isDirectory()) {
+    }
+    if (url.pathname === '/api/disable') {
+      return handlePost(req, res, async () => {
+        await runEngine(['disable']);
+        json({ enabled: false });
+      });
+    }
+    if (url.pathname === '/api/record-raw-on') {
+      return handlePost(req, res, async () => {
+        await runEngine(['record-raw', '--enable']);
+        json({ recordRaw: true });
+      });
+    }
+    if (url.pathname === '/api/record-raw-off') {
+      return handlePost(req, res, async () => {
+        await runEngine(['record-raw', '--disable']);
+        json({ recordRaw: false });
+      });
+    }
+    if (url.pathname === '/api/signal') {
+      return handlePost(req, res, async () => {
+        const r = await runEngine(['signal']);
+        json(r);
+      });
+    }
+    if (url.pathname === '/api/todos/add') {
+      return handlePost(req, res, async (body) => {
+        const text = body.text || '';
+        const r = await runEngine(['todos', '--add', text]);
+        json(r.ok ? JSON.parse(r.out) : { error: r.err });
+      });
+    }
+    if (url.pathname === '/api/todos/done') {
+      return handlePost(req, res, async (body) => {
+        const id = body.id || '';
+        const r = await runEngine(['todos', '--done', id]);
+        json(r.ok ? JSON.parse(r.out) : { error: r.err });
+      });
+    }
+    if (url.pathname === '/api/backup') {
+      return handlePost(req, res, async (body) => {
+        const msg = body.msg || '';
+        const args = ['backup'];
+        if (msg) args.push('--msg', msg);
+        const r = await runEngine(args);
+        json(r.ok ? JSON.parse(r.out) : { error: r.err });
+      });
+    }
+    if (url.pathname === '/api/version') {
+      return handlePost(req, res, async () => {
+        const r = await runEngine(['version', '--force']);
+        json(r.ok ? JSON.parse(r.out) : { error: r.err });
+      });
+    }
+    if (url.pathname === '/api/embed') {
+      return handlePost(req, res, async (body) => {
+        const force = body.force ? '--force' : null;
+        const args = ['embed'];
+        if (force) args.push(force);
+        const r = await runEngine(args);
+        json(r.ok ? JSON.parse(r.out) : { error: r.err });
+      });
+    }
+    if (url.pathname === '/api/content-index') {
+      return handlePost(req, res, async () => {
+        const r = await runEngine(['content-index']);
+        json(r.ok ? JSON.parse(r.out) : { error: r.err });
+      });
+    }
+
+    // ═══════ 回收站（写操作 — POST）═══════
+    if (url.pathname === '/api/delete') {
+      return handlePost(req, res, async (body) => {
+        const p = body.p || '';
+        const full = path.resolve(ROOT, p);
+        if (!safePath(p) || !fs.existsSync(full)) return json({ deleted: false, error: '路径不安全或不存在' });
+        const banned = ['MEMORY.md', 'MEMORY-PROTOCOL.md', 'state.json', 'index.md'];
+        if (banned.includes(path.basename(full))) return json({ deleted: false, error: '核心文件不允许删除' });
+        // 目录：仅允许删除空目录
+        if (fs.statSync(full).isDirectory()) {
+          try {
+            if (fs.readdirSync(full).length > 0) return json({ deleted: false, error: '目录非空，不允许删除' });
+            fs.rmdirSync(full);
+            return json({ trashed: true, file: p, trashId: 'dir_' + Date.now().toString(36), note: '空目录已删除' });
+          } catch (e) {
+            return json({ trashed: false, error: e.message });
+          }
+        }
         try {
-          if (fs.readdirSync(full).length > 0) return json({ deleted: false, error: '目录非空，不允许删除' });
-          fs.rmdirSync(full);
-          return json({ trashed: true, file: p, trashId: 'dir_' + Date.now().toString(36), note: '空目录已删除' });
+          fs.mkdirSync(TRASH_DIR, { recursive: true });
+          const id = Date.now().toString(36) + '_' + path.basename(full);
+          const meta = { original: p, deletedAt: new Date().toISOString(), size: fs.statSync(full).size };
+          const trashFile = path.join(TRASH_DIR, id);
+          fs.renameSync(full, trashFile);
+          fs.writeFileSync(trashFile + '.meta', JSON.stringify(meta));
+          return json({ trashed: true, file: p, trashId: id, note: '已移入回收站，15天后自动清除' });
         } catch (e) {
           return json({ trashed: false, error: e.message });
         }
-      }
-      try {
-        fs.mkdirSync(TRASH_DIR, { recursive: true });
-        const id = Date.now().toString(36) + '_' + path.basename(full);
-        const meta = { original: p, deletedAt: new Date().toISOString(), size: fs.statSync(full).size };
-        const trashFile = path.join(TRASH_DIR, id);
-        fs.renameSync(full, trashFile);
-        fs.writeFileSync(trashFile + '.meta', JSON.stringify(meta));
-        return json({ trashed: true, file: p, trashId: id, note: '已移入回收站，15天后自动清除' });
-      } catch (e) {
-        return json({ trashed: false, error: e.message });
-      }
+      });
     }
     if (url.pathname === '/api/trash') {
       fs.mkdirSync(TRASH_DIR, { recursive: true });
@@ -394,44 +481,48 @@ const server = http.createServer(async (req, res) => {
       return json({ items });
     }
     if (url.pathname === '/api/trash/restore') {
-      const id = url.searchParams.get('id') || '';
-      const trashFile = path.join(TRASH_DIR, id);
-      const metaFile = trashFile + '.meta';
-      if (!fs.existsSync(trashFile)) return json({ restored: false, error: '文件不存在' });
-      try {
-        const meta = JSON.parse(fs.readFileSync(metaFile, 'utf8'));
-        const original = path.resolve(ROOT, meta.original);
-        fs.mkdirSync(path.dirname(original), { recursive: true });
-        fs.renameSync(trashFile, original);
-        fs.unlinkSync(metaFile);
-        return json({ restored: true, to: meta.original });
-      } catch (e) {
-        return json({ restored: false, error: e.message });
-      }
+      return handlePost(req, res, async (body) => {
+        const id = body.id || '';
+        const trashFile = path.join(TRASH_DIR, id);
+        const metaFile = trashFile + '.meta';
+        if (!fs.existsSync(trashFile)) return json({ restored: false, error: '文件不存在' });
+        try {
+          const meta = JSON.parse(fs.readFileSync(metaFile, 'utf8'));
+          const original = path.resolve(ROOT, meta.original);
+          // 安全检查：待恢复路径必须在白名单内
+          if (!safePath(meta.original)) return json({ restored: false, error: '恢复路径不安全' });
+          fs.mkdirSync(path.dirname(original), { recursive: true });
+          fs.renameSync(trashFile, original);
+          fs.unlinkSync(metaFile);
+          return json({ restored: true, to: meta.original });
+        } catch (e) {
+          return json({ restored: false, error: e.message });
+        }
+      });
     }
     if (url.pathname === '/api/trash/purge') {
-      const id = url.searchParams.get('id') || '';
-      if (!id) return json({ purged: false, error: '需要 id 参数' });
-      const trashFile = path.join(TRASH_DIR, id);
-      const metaFile = trashFile + '.meta';
-      if (!fs.existsSync(trashFile)) return json({ purged: false, error: '文件不存在' });
-      try {
-        fs.unlinkSync(trashFile);
-        if (fs.existsSync(metaFile)) fs.unlinkSync(metaFile);
-        return json({ purged: true, id });
-      } catch (e) {
-        return json({ purged: false, error: e.message });
-      }
+      return handlePost(req, res, async (body) => {
+        const id = body.id || '';
+        if (!id) return json({ purged: false, error: '需要 id 参数' });
+        const trashFile = path.join(TRASH_DIR, id);
+        const metaFile = trashFile + '.meta';
+        if (!fs.existsSync(trashFile)) return json({ purged: false, error: '文件不存在' });
+        try {
+          fs.unlinkSync(trashFile);
+          if (fs.existsSync(metaFile)) fs.unlinkSync(metaFile);
+          return json({ purged: true, id });
+        } catch (e) {
+          return json({ purged: false, error: e.message });
+        }
+      });
     }
-    // --- P2 custom logo ---
+
+    // ═══════ 静态资源 ═══════
     if (url.pathname === '/api/logo') {
       const logoPaths = [
-        path.join(__dirname, 'logo.png'),
-        path.join(__dirname, 'logo.jpg'),
-        path.join(__dirname, 'logo.jpeg'),
-        path.join(__dirname, 'logo.webp'),
-        path.join(__dirname, 'logo.gif'),
-        path.join(__dirname, 'logo.svg'),
+        path.join(__dirname, 'logo.png'), path.join(__dirname, 'logo.jpg'),
+        path.join(__dirname, 'logo.jpeg'), path.join(__dirname, 'logo.webp'),
+        path.join(__dirname, 'logo.gif'), path.join(__dirname, 'logo.svg'),
       ];
       for (const lp of logoPaths) {
         if (fs.existsSync(lp)) {
@@ -453,5 +544,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`Mnemosyne v2 UI listening on http://${HOST}:${PORT} (workspace: ${ROOT})`);
+  console.log(`Mnemosyne v3-lite UI listening on http://${HOST}:${PORT} (workspace: ${ROOT})`);
 });

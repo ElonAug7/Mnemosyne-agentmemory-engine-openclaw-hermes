@@ -4,10 +4,15 @@
 #
 # 兼容 Linux (systemd) 和 macOS (launchd)，零第三方依赖。
 #
-# 用法：
-#   1. 把 Mnemosyne-* 文件夹放到 OpenClaw 工作区的 tools/ 下
-#   2. cd Mnemosyne-* && bash install.sh
-#   3. 脚本自动将文件夹重命名为 memory-engine（如需要）
+# 用法（两种方式任选其一）：
+#
+#   方法一（推荐）: 手动放到工作区
+#     1. cp -r Mnemosyne-v2 ~/.openclaw/workspace/tools/
+#     2. cd ~/.openclaw/workspace/tools/Mnemosyne-v2 && bash install.sh
+#
+#   方法二: 从任意位置一键部署
+#     1. bash /path/to/Mnemosyne-v2/install.sh
+#     脚本自动检测 → 复制到 workspace/tools/memory-engine → 完成安装
 #
 # 自动完成：
 #   · 自动重命名为 memory-engine（AGENTS.md/hook 硬依赖）
@@ -25,31 +30,34 @@ SELF_NAME="$(basename "$SELF_DIR")"
 WORKSPACE="${OPENCLAW_WORKSPACE:-$HOME/.openclaw/workspace}"
 EXPECTED_NAME="memory-engine"
 
-# ---- 0. 自动重命名文件夹 ----
-if [ "$SELF_NAME" != "$EXPECTED_NAME" ]; then
-  PARENT_DIR="$(dirname "$SELF_DIR")"
-  TARGET="$PARENT_DIR/$EXPECTED_NAME"
+# ---- 0. 确保引擎在 workspace/tools/memory-engine ----
+EXPECTED_DIR="$WORKSPACE/tools/$EXPECTED_NAME"
 
-  echo "📁 检测到文件夹名为 '$SELF_NAME'，需要重命名为 '$EXPECTED_NAME'"
+if [ "$SELF_DIR" != "$EXPECTED_DIR" ]; then
+  echo "📍 当前位置: $SELF_DIR"
+  echo "🎯 目标位置: $EXPECTED_DIR"
+  echo ""
 
-  if [ -d "$TARGET" ]; then
-    echo "   ⚠️  $TARGET 已存在，将覆盖更新..."
-    rm -rf "$TARGET"
+  # 创建 tools/ 目录（如果还不存在）
+  mkdir -p "$(dirname "$EXPECTED_DIR")"
+
+  if [ -d "$EXPECTED_DIR" ]; then
+    echo "   ⚠️  $EXPECTED_DIR 已存在，将覆盖更新..."
+    rm -rf "$EXPECTED_DIR"
   fi
 
-  # 先复制到目标位置，再从目标位置重新执行安装
-  cp -r "$SELF_DIR" "$TARGET"
-  echo "   ✅ 已复制到 $TARGET"
+  # 复制到正确位置
+  cp -r "$SELF_DIR" "$EXPECTED_DIR"
+  echo "   ✅ 已部署到 $EXPECTED_DIR"
 
-  # 删除原始文件夹（除了正在运行的脚本本身）
-  # 用后台进程延迟删除，避免干扰当前 shell
+  # 清理原始文件夹（后台延迟删除，避免干扰当前 shell）
   (sleep 1 && rm -rf "$SELF_DIR") &
   echo "   ✅ 原始文件夹将在后台清理"
 
-  # 从新位置重新执行
+  # 从正确位置重新执行
   echo ""
-  echo "🔄 从新位置重新执行安装..."
-  exec bash "$TARGET/install.sh"
+  echo "🔄 从工作区重新执行安装..."
+  exec bash "$EXPECTED_DIR/install.sh"
   exit 0
 fi
 
@@ -59,7 +67,7 @@ ENGINE_DIR="$SELF_DIR"
 HOOK_DIR="$HOME/.openclaw/hooks/memory-recorder"
 UI_PORT="${MEMORY_UI_PORT:-8765}"
 
-echo "🧠 Mnemosyne 安装程序"
+echo "🧠 Mnemosyne v2 安装程序"
 echo "   引擎目录: $ENGINE_DIR"
 echo "   工作区:   $WORKSPACE"
 echo ""

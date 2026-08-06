@@ -26,15 +26,23 @@ const ALLOWED = [
   path.join(ROOT, 'MEMORY-PROTOCOL.md'),
 ];
 
-// 文件分类标签（四层记忆）
-// 短期层范围宽一些：原始对话流 + 每日流水日志都算短期记忆；
-// 引擎内部文件、协议文档等非记忆数据归为「无用」。
+// 文件分类标签（四层记忆 + 系统内部）
+// 引擎/版本/日志 → 归入「系统」，默认隐藏；回收站也默认隐藏
+// 用户可点开关查看
 function layerOf(p) {
+  if (p.startsWith('memory/short/working/')) return '工作台';
+  if (p.startsWith('memory/short/inject/')) return '今日摘要';
+  if (p.startsWith('memory/short/raw/')) return '对话记录';
   if (p.startsWith('memory/index/')) return '索引';
-  if (p.startsWith('memory/short/') || /^memory\/\d{4}-\d{2}-\d{2}\.md$/.test(p)) return '短期';
-  if (p.startsWith('memory/medium/')) return '中期';
-  if (p.startsWith('memory/long/') || p === 'MEMORY.md') return '长期';
-  return '无用';
+  if (p.startsWith('memory/medium/')) return '中期归档';
+  if (p.startsWith('memory/long/') || p === 'MEMORY.md') return '长期知识';
+  if (p === 'memory/todos.md') return '待办';
+  if (/^memory\/\d{4}-\d{2}-\d{2}\.md$/.test(p)) return '今日摘要';
+  if (p.startsWith('memory/engine/')) return '__系统';
+  if (p.startsWith('memory/versions/')) return '__版本';
+  if (p.includes('.trash')) return '__回收站';
+  if (p.startsWith('memory/') && /^memory\/[^/]+\.(md|json)$/.test(p)) return '其他';
+  return '__系统';
 }
 
 function safePath(p) {
@@ -86,6 +94,14 @@ function readLimited(full, limit = 512 * 1024) {
   return { text: sanitizeHTML(text), size: st.size, mtime: st.mtimeMs };
 }
 
+function fmtAge(ms) {
+  const min = Math.floor(ms / 60000);
+  if (min < 60) return min + '分钟';
+  const h = Math.floor(min / 60);
+  if (h < 24) return h + '小时';
+  return Math.floor(h / 24) + '天';
+}
+
 function runEngine(args) {
   return new Promise((resolve) => {
     execFile('node', [path.join(__dirname, 'engine.js'), ...args], { timeout: 10000 }, (err, stdout, stderr) => {
@@ -127,6 +143,8 @@ const server = http.createServer(async (req, res) => {
     }
     if (url.pathname === '/api/enable') { await runEngine(['enable']); return json({ enabled: true }); }
     if (url.pathname === '/api/disable') { await runEngine(['disable']); return json({ enabled: false }); }
+    if (url.pathname === '/api/record-raw-on') { await runEngine(['record-raw', '--enable']); return json({ recordRaw: true }); }
+    if (url.pathname === '/api/record-raw-off') { await runEngine(['record-raw', '--disable']); return json({ recordRaw: false }); }
     if (url.pathname === '/api/signal') { const r = await runEngine(['signal']); return json(r); }
     if (url.pathname === '/api/files') return json(listFiles());
     if (url.pathname === '/api/file') {
@@ -219,6 +237,113 @@ const server = http.createServer(async (req, res) => {
       return json(r.ok ? JSON.parse(r.out) : { error: r.err });
     }
 
+    // --- P2 建议清理 ---
+    if (url.pathname === '/api/cleanup-suggestions') {
+      const suggestions = [];
+      const now = Date.now();
+      const DAY = 86400000;
+
+      // 调试日志 > 1 天 或 > 10KB（但排除 1 小时内修改的活跃日志）
+      const engineDir = path.join(ROOT, 'memory', 'engine');
+      if (fs.existsSync(engineDir)) {
+        for (const f of fs.readdirSync(engineDir)) {
+          if (!f.endsWith('.log')) continue;
+          const fp = path.join(engineDir, f);
+          try {
+            const st = fs.statSync(fp);
+            const age = now - st.mtimeMs;
+            if (age < 3600000) continue; // 活跃日志不清理
+            if (age > DAY || st.size > 10240) suggestions.push({
+              file: 'memory/engine/' + f, size: st.size, age: fmtAge(age),
+              reason: `调试日志 (${(st.size/1024).toFixed(1)}KB)`, safe: true
+            });
+          } catch {}
+        }
+      }
+
+      // inject 文件 > 3 天
+      const injectDir = path.join(ROOT, 'memory', 'short', 'inject');
+      if (fs.existsSync(injectDir)) {
+        for (const f of fs.readdirSync(injectDir)) {
+          if (!f.endsWith('.json')) continue;
+          const m = f.match(/^(\d{4}-\d{2}-\d{2})/);
+          if (!m) continue;
+          const d = new Date(m[1] + 'T00:00:00').getTime();
+          if (now - d > 3 * DAY) {
+            const fp = path.join(injectDir, f);
+            const st = fs.statSync(fp);
+            suggestions.push({
+              file: 'memory/short/inject/' + f, size: st.size, age: fmtAge(now - st.mtimeMs),
+              reason: '过期摘要 (>3天)', safe: true
+            });
+          }
+        }
+      }
+
+      // embeddings.json > 1 天可重建
+      const embFile = path.join(engineDir, 'embeddings.json');
+      try {
+        if (fs.existsSync(embFile)) {
+          const st = fs.statSync(embFile);
+          if (now - st.mtimeMs > DAY) suggestions.push({
+            file: 'memory/engine/embeddings.json', size: st.size, age: fmtAge(now - st.mtimeMs),
+            reason: `语义索引可重建 (${(st.size/1024).toFixed(1)}KB)`, safe: true
+          });
+        }
+      } catch {}
+
+      // 被拒绝的 distill proposals > 3 天
+      const dpFile = path.join(engineDir, 'distill-proposals.json');
+      try {
+        if (fs.existsSync(dpFile)) {
+          const dp = JSON.parse(fs.readFileSync(dpFile, 'utf8'));
+          const old = dp.proposals.filter(p => p.status === 'rejected' && now - new Date(p.created_at).getTime() > 3 * DAY);
+          if (old.length) suggestions.push({
+            file: 'memory/engine/distill-proposals.json', size: old.length, age: '-',
+            reason: `${old.length} 条旧提案可清理`, safe: false
+          });
+        }
+      } catch {}
+
+      // 空的 archive 目录
+      for (const sub of ['short', 'medium']) {
+        const archiveDir = path.join(ROOT, 'memory', sub, 'archive');
+        try {
+          if (fs.existsSync(archiveDir) && !fs.readdirSync(archiveDir).length) {
+            suggestions.push({
+              file: 'memory/' + sub + '/archive', size: 0, age: '-',
+              reason: '空归档目录', safe: true
+            });
+          }
+        } catch {}
+      }
+
+      // 回收站中的文件（提示可彻底删除）
+      const trashDir = path.join(ROOT, 'memory', '.trash');
+      if (fs.existsSync(trashDir)) {
+        for (const f of fs.readdirSync(trashDir)) {
+          if (f.endsWith('.meta')) continue;
+          const fp = path.join(trashDir, f);
+          try {
+            const st = fs.statSync(fp);
+            const metaFile = fp + '.meta';
+            let deletedAt = null;
+            try { deletedAt = JSON.parse(fs.readFileSync(metaFile, 'utf8')).deletedAt; } catch {}
+            const age = deletedAt ? Math.floor((now - new Date(deletedAt).getTime()) / DAY) : 0;
+            if (age >= 10) {
+              suggestions.push({
+                file: '.trash/' + f, size: st.size, age: age + '天',
+                reason: '回收站即将到期', safe: false, trashId: f
+              });
+            }
+          } catch {}
+        }
+      }
+
+      suggestions.sort((a, b) => (b.size || 0) - (a.size || 0));
+      return json({ suggestions, total: suggestions.length, freedEstimate: suggestions.reduce((s, i) => s + (i.size || 0), 0) });
+    }
+
     // --- 回收站系统 ---
     const TRASH_DIR = path.join(ROOT, 'memory', '.trash');
 
@@ -233,7 +358,16 @@ const server = http.createServer(async (req, res) => {
       if (!safe || !fs.existsSync(full)) return json({ deleted: false, error: '路径不安全或不存在' });
       const banned = ['MEMORY.md', 'MEMORY-PROTOCOL.md', 'state.json', 'index.md'];
       if (banned.includes(path.basename(full))) return json({ deleted: false, error: '核心文件不允许删除' });
-      if (fs.statSync(full).isDirectory()) return json({ deleted: false, error: '不支持删除目录' });
+      // 目录：仅允许删除空目录
+      if (fs.statSync(full).isDirectory()) {
+        try {
+          if (fs.readdirSync(full).length > 0) return json({ deleted: false, error: '目录非空，不允许删除' });
+          fs.rmdirSync(full);
+          return json({ trashed: true, file: p, trashId: 'dir_' + Date.now().toString(36), note: '空目录已删除' });
+        } catch (e) {
+          return json({ trashed: false, error: e.message });
+        }
+      }
       try {
         fs.mkdirSync(TRASH_DIR, { recursive: true });
         const id = Date.now().toString(36) + '_' + path.basename(full);
@@ -319,5 +453,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`Mnemosyne UI listening on http://${HOST}:${PORT} (workspace: ${ROOT})`);
+  console.log(`Mnemosyne v2 UI listening on http://${HOST}:${PORT} (workspace: ${ROOT})`);
 });

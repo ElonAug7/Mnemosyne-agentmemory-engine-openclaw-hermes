@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Mnemosyne v1 — OpenClaw 可移植分层记忆引擎
+ * Mnemosyne v2 — OpenClaw 可移植分层记忆引擎
  *
  * 命名来源：Mnemosyne（谟涅摩绪涅），希腊记忆女神，缪斯之母。
  *
@@ -40,7 +40,6 @@ const D = {
   long:   path.join(MEM, 'long'),
   engine: path.join(MEM, 'engine'),
   versions: path.join(MEM, 'versions'),
-  agents: path.join(MEM, 'agents'),
 };
 // 兼容旧路径（迁移前引用）
 D.short = D.shortRaw;
@@ -54,19 +53,78 @@ const OFFSETS_FILE = path.join(D.engine, 'transcript-offsets.json');
 const VECTORS_FILE = path.join(D.engine, 'embeddings.json');
 const TODOS_FILE  = path.join(D.engine, 'todos.json');
 const TODOS_MD    = path.join(MEM, 'todos.md');
+const CONFIG_FILE = path.join(D.engine, 'config.json');
 
-const SHORT_THRESHOLD = 5;
-const MEDIUM_THRESHOLD = 20;
-const WORKING_UPDATE_THRESHOLD = 3; // 每 3 条高重要性消息刷新工作记忆
-const MEDIUM_CHECK_INTERVAL_MS = 3600 * 1000; // 每小时检查是否需要中期摘要
-const MAX_RAW_LINES_PER_DAY = 100; // raw 文件最大行数，超出截断
+// 配置默认值（首次运行生成，之后从 config.json 读取）
+const DEFAULT_CONFIG = {
+  retention: { injectDays: 7, rawDays: 30, mediumDays: 180, logDays: 3, suggestionDays: 14, trashDays: 15 },
+  thresholds: { shortSignalTurns: 5, mediumSignalTurns: 20, workingUpdateMsgs: 3, mediumCheckIntervalMs: 3600000, rawMaxLines: 100, rawMaxChars: 800, mediumMinDensity: 50, consolidateIntervalMs: 1800000, consolidateMinMsgs: 8, consolidateMinHighImp: 2, consolidateMinImpSum: 3.0, dailyDistillHour: 22 },
+  recordRaw: true,  // 可选：关闭则不再保存 raw 对话记录（JSONL），其他功能正常
+  embed: { defaultEnabled: true, maxRecentDays: 30, dims: 512 },
+  weights: {
+    keyword:  { working:0.08, inject:0.10, raw:0.12, medium:0.22, long:0.25, idx:0.18, semantic:0.05 },
+    semantic: { working:0.08, inject:0.10, raw:0.10, medium:0.25, long:0.22, idx:0.05, semantic:0.20 },
+    hybrid:   { working:0.10, inject:0.12, raw:0.15, medium:0.22, long:0.18, idx:0.08, semantic:0.15 },
+    recent:   { working:0.25, inject:0.20, raw:0.25, medium:0.15, long:0.10, idx:0.03, semantic:0.02 },
+    history:  { working:0.02, inject:0.03, raw:0.05, medium:0.20, long:0.45, idx:0.20, semantic:0.05 },
+  },
+};
+
+function loadConfig() {
+  ensureDirs();
+  try { const c = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); return deepMerge(DEFAULT_CONFIG, c); }
+  catch { fs.writeFileSync(CONFIG_FILE, JSON.stringify(DEFAULT_CONFIG, null, 2)); return JSON.parse(JSON.stringify(DEFAULT_CONFIG)); }
+}
+function deepMerge(def, over) { const r = JSON.parse(JSON.stringify(def)); for (const k in over) { if (over[k] && typeof over[k]==='object' && !Array.isArray(over[k])) r[k]=deepMerge(def[k]||{},over[k]); else r[k]=over[k]; } return r; }
+
+const CFG = loadConfig();
+const SHORT_THRESHOLD = CFG.thresholds.shortSignalTurns;
+const MEDIUM_THRESHOLD = CFG.thresholds.mediumSignalTurns;
+const WORKING_UPDATE_THRESHOLD = CFG.thresholds.workingUpdateMsgs;
+const MEDIUM_CHECK_INTERVAL_MS = CFG.thresholds.mediumCheckIntervalMs;
+const MAX_RAW_LINES_PER_DAY = CFG.thresholds.rawMaxLines;
 const TRANSCRIPT_WINDOW_MS = 48 * 3600 * 1000; // 只同步最近 48h 内修改过的转录文件
 const SHORT_RETAIN_DAYS = 30;   // 短期记忆保留天数（之后 gzip 归档）
 const MEDIUM_RETAIN_DAYS = 180; // 中期记忆保留天数
-const EMBED_RECENT_DAYS = 30;   // 语义索引只覆盖最近 N 天的短期对话
+const EMBED_RECENT_DAYS = CFG.embed.maxRecentDays;   // 语义索引只覆盖最近 N 天的短期对话
 const ARCHIVE_INTERVAL_MS = 6 * 3600 * 1000; // sync 时归档检查节流
 const VERSION_RETAIN = 50; // 保留最近 50 个 MEMORY.md 版本
 const VERSION_COOLDOWN = 3600 * 1000; // 同一小时不重复快照（避免高频刷写）
+const LOCK_FILE = path.join(D.engine, 'lockfile');
+const LOCK_TIMEOUT_MS = 120000; // 锁超时 2 分钟
+const DISTILL_PROPOSALS_FILE = path.join(D.engine, 'distill-proposals.json');
+
+// ============================================================
+// 进程锁：防止多个 cron 同时写 memory 文件（P0 安全加固）
+// ============================================================
+
+function acquireLock(label = 'unknown') {
+  ensureDirs();
+  const pid = String(process.pid);
+  try {
+    fs.writeFileSync(LOCK_FILE, JSON.stringify({ pid, label, at: nowIso() }), { flag: 'wx' });
+    return true;
+  } catch (e) {
+    if (e.code === 'EEXIST') {
+      // 检查是否超时（锁持有者可能已崩溃）
+      try {
+        const lock = JSON.parse(fs.readFileSync(LOCK_FILE, 'utf8'));
+        const age = Date.now() - new Date(lock.at).getTime();
+        if (age > LOCK_TIMEOUT_MS) {
+          fs.unlinkSync(LOCK_FILE);
+          fs.writeFileSync(LOCK_FILE, JSON.stringify({ pid, label, at: nowIso() }), { flag: 'wx' });
+          return true;
+        }
+      } catch {}
+      return false;
+    }
+    throw e;
+  }
+}
+
+function releaseLock() {
+  try { fs.unlinkSync(LOCK_FILE); } catch {}
+}
 
 // ============================================================
 // 模板加载（从 templates/ 目录，引擎内嵌兜底）
@@ -132,6 +190,14 @@ function ensureDirs() {
   try {
     if (!fs.existsSync(LONG_LINK)) fs.symlinkSync(LONG_FILE, LONG_LINK);
   } catch { /* 静默跳过 */ }
+  // 引擎调试日志轮转：超过 50KB 截断保留尾部
+  const debugLog = path.join(D.engine, 'hook-debug.log');
+  try {
+    if (fs.existsSync(debugLog) && fs.statSync(debugLog).size > 51200) {
+      const buf = fs.readFileSync(debugLog, 'utf8');
+      fs.writeFileSync(debugLog, buf.slice(buf.length - 20480));
+    }
+  } catch {}
 }
 
 function loadState() {
@@ -139,7 +205,7 @@ function loadState() {
     return Object.assign({
       enabled: true, turns: 0, totalMessages: 0,
       lastSignalAt: null, lastMessageAt: null,
-      semanticEnabled: false,
+      semanticEnabled: true,
     }, JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')));
   } catch {
     return { enabled: true, turns: 0, totalMessages: 0, lastSignalAt: null, lastMessageAt: null };
@@ -168,6 +234,17 @@ const IMP_TODO     = /待办|todo|fixme|下一步|计划|回头|稍后|提醒我
 const IMP_FACT     = /\d+\s*(元|块|￥|\$|天|小时|点|号|月|年|%)/;
 const IMP_CHITCHAT = /^(哈哈+|嗯+|好的?|ok|okay|谢谢|收到|明白|6+|👍|🙏|😄|😂|❤️)\s*[!！。.~]*$/i;
 
+// imp 评分逻辑（文档化，P1 可校准）
+// 基准: user=0.35, assistant=0.30
+// 加成:
+//   +0.30 含决策词（决定/确认/最终方案/agreed 等）
+//   +0.25 含待办/提醒词（todo/下一步/记得/别忘了 等）
+//   +0.10 含数字+单位（元/块/天/小时/月/年/%）
+//   +0.05 以问号结尾（提问）
+//   +0.05 长度>500字符（长消息信息量大）
+// 封顶: 1.0
+// 闲聊降级: 仅含哈哈/嗯/好的/ok/谢谢/收到/明白 等 → 固定 0.1
+// 手动校准: engine.js imp-calibrate --date "2026-08-06" --line <N> --imp 0.8
 function importanceOf(role, text) {
   const t = String(text || '').trim();
   if (!t) return 0;
@@ -213,20 +290,35 @@ function openclawHome() {
   return process.env.OPENCLAW_HOME || path.join(os.homedir(), '.openclaw');
 }
 
+// P2 加固：语义去重 — 规范化文本后比较，抵抗格式差异
 function alreadyRecorded(day, text) {
   const file = path.join(D.short, `${day}.jsonl`);
   if (!fs.existsSync(file)) return false;
-  const needle = String(text).slice(0, 200);
+  const normalized = normalizeForDedup(String(text));
+  if (normalized.length < 8) return false; // 太短不比较，但也允许记录
   const lines = fs.readFileSync(file, 'utf8').split('\n');
   for (let i = Math.max(0, lines.length - 400); i < lines.length; i++) {
     const l = lines[i];
     if (!l) continue;
     try {
       const o = JSON.parse(l);
-      if (String(o.text || '').slice(0, 200) === needle) return true;
-    } catch { /* 忽略坏行 */ }
+      const existing = normalizeForDedup(String(o.text || ''));
+      // 前 120 字符匹配 OR 语义 hash 匹配
+      if (existing === normalized) return true;
+      if (existing.length >= 30 && normalized.length >= 30 &&
+          existing.slice(0, Math.min(120, existing.length)) === normalized.slice(0, Math.min(120, existing.length))) return true;
+    } catch {}
   }
   return false;
+}
+
+// 规范化：去时间戳格式、去空白差异、去前缀元数据
+function normalizeForDedup(s) {
+  return s
+    .replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[.\d]*Z?/g, '')
+    .replace(/\[\d{2}:\d{2}\]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function syncTranscripts() {
@@ -377,7 +469,24 @@ function reindex() {
 
 // ============================================================
 // 自动归档（功能 4）：短期 >30 天按月份 gzip 合并，中期 >180 天单文件 gzip
+// P1 改进：归档时同步生成轻量索引（日期+关键词+imp），搜索先查索引再决定是否解压
 // ============================================================
+
+function buildArchiveIndex(filePath, data) {
+  // 从 JSONL 数据提取索引行：每行 → {ts, imp, keywords}
+  const lines = String(data).split('\n').filter(l => l.trim());
+  const idx = [];
+  for (const line of lines) {
+    try {
+      const m = JSON.parse(line);
+      const words = (String(m.text || '').match(/[\u4e00-\u9fff]{2,6}/g) || [])
+        .filter(w => !/^[的地得了吗呢啊哦嗯哈是你我他她它这那]+$/.test(w))
+        .slice(0, 5);
+      idx.push({ ts: m.ts, imp: m.imp || 0.3, kw: words.join(',') });
+    } catch {}
+  }
+  return idx;
+}
 
 function archiveOld() {
   ensureDirs();
@@ -389,11 +498,19 @@ function archiveOld() {
     const src = path.join(D.short, f);
     const month = m[1].slice(0, 7);
     const dst = path.join(D.shortArchive, `${month}.jsonl.gz`);
+    const idxDst = path.join(D.shortArchive, `${month}.idx.json`);
     const data = fs.readFileSync(src);
     let merged = data;
     if (fs.existsSync(dst)) {
       try { merged = Buffer.concat([zlib.gunzipSync(fs.readFileSync(dst)), Buffer.from('\n'), data]); } catch {}
     }
+    // P1: 生成归档索引
+    let idxEntries = [];
+    if (fs.existsSync(idxDst)) {
+      try { idxEntries = JSON.parse(fs.readFileSync(idxDst, 'utf8')); } catch {}
+    }
+    idxEntries = idxEntries.concat(buildArchiveIndex(src, data));
+    fs.writeFileSync(idxDst, JSON.stringify(idxEntries));
     fs.writeFileSync(dst, zlib.gzipSync(merged));
     fs.unlinkSync(src);
     stat.shortArchived++;
@@ -714,7 +831,132 @@ function checkMediumNeeded() {
 }
 
 // ============================================================
+// v5.2：自动整合 — 无需提醒，自动把新对话提炼为中期摘要块并同步索引
+// 触发：record / sync 时节流检查；条件满足即写入 medium/ + reindex
+// ============================================================
+
+function localHM(ts) {
+  const d = new Date(ts);
+  const p = n => String(n).padStart(2, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function readNewMessages(sinceTs) {
+  const since = sinceTs ? new Date(sinceTs).getTime() : 0;
+  const msgs = [];
+  const files = fs.existsSync(D.shortRaw)
+    ? fs.readdirSync(D.shortRaw).filter(f => f.endsWith('.jsonl')).sort().slice(-2)
+    : [];
+  for (const f of files) {
+    for (const line of fs.readFileSync(path.join(D.shortRaw, f), 'utf8').split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const m = JSON.parse(line);
+        if (new Date(m.ts).getTime() > since && String(m.text || '').trim().length >= 6) msgs.push(m);
+      } catch {}
+    }
+  }
+  return msgs;
+}
+
+function buildAutoSummaryBlock(msgs) {
+  const highImp = msgs.filter(m => (m.imp || 0) >= 0.5);
+  const clean = t => String(t || '').replace(/\s+/g, ' ').trim();
+
+  // 话题词频（优先高重要性消息）
+  const topicFreq = {};
+  for (const m of (highImp.length ? highImp : msgs)) {
+    const words = String(m.text || '').match(/[\u4e00-\u9fff]{2,6}/g) || [];
+    for (const w of words) {
+      if (/^[的地得了吗呢啊哦嗯哈是你我他她它这那]+$/.test(w)) continue;
+      topicFreq[w] = (topicFreq[w] || 0) + 1;
+    }
+  }
+  const topics = Object.entries(topicFreq).sort((a, b) => b[1] - a[1]).slice(0, 6).map(e => e[0]);
+
+  const decisions = [...new Set(msgs
+    .filter(m => IMP_DECISION.test(String(m.text || '')) && String(m.text || '').length > 10)
+    .map(m => clean(m.text).slice(0, 120)))].slice(0, 4);
+
+  const facts = [...new Set(msgs
+    .filter(m => m.role === 'user' && /\d/.test(String(m.text || '')) && String(m.text || '').length > 15)
+    .map(m => clean(m.text).slice(0, 120)))].slice(0, 4);
+
+  const todos = [];
+  for (const pat of TODO_PATTERNS) {
+    for (const m of msgs) {
+      const re = new RegExp(pat.source, pat.flags);
+      let mm;
+      while ((mm = re.exec(String(m.text || ''))) && todos.length < 3) {
+        const t = (mm[1] || mm[0] || '').trim();
+        if (t.length >= 4) todos.push(t.slice(0, 100));
+      }
+    }
+  }
+
+  const times = msgs.map(m => new Date(m.ts).getTime()).sort((a, b) => a - b);
+  const firstTs = times[0], lastTs = times[times.length - 1];
+  const now = localHM(Date.now());
+  const title = `自动摘要 ${localHM(firstTs)}–${localHM(lastTs)}（${msgs.length}条）`;
+
+  const lines = [`## ${now} ${title}`];
+  lines.push(`- 结论/决策：${decisions.length ? decisions.join('；') : '无'}`);
+  lines.push(`- 关键事实：${facts.length ? facts.join('；') : '无'}`);
+  lines.push(`- 待办：${todos.length ? todos.join('；') : '无'}`);
+  lines.push(`- 关键词：${topics.length ? topics.join(', ') : '一般对话'}`);
+
+  return { text: lines.join('\n'), title, topics, lastTs: new Date(lastTs).toISOString() };
+}
+
+function autoConsolidate(opts = {}) {
+  ensureDirs();
+  const s = loadState();
+  const force = !!opts.force;
+  const check = !!opts.check;
+
+  // 节流：默认 30 分钟检查一次
+  const interval = CFG.thresholds.consolidateIntervalMs || 1800000;
+  if (!force && !check && s.lastConsolidateAt &&
+      Date.now() - new Date(s.lastConsolidateAt).getTime() < interval) {
+    return { needed: false, reason: 'throttled' };
+  }
+
+  const msgs = readNewMessages(s.lastConsolidateTs || null);
+  const highImpCount = msgs.filter(m => (m.imp || 0) >= 0.5).length;
+  // P1: imp 累积值触发（替代硬阈值 8 条）
+  const impSum = msgs.reduce((acc, m) => acc + (m.imp || 0.3), 0);
+  const minMsgs = CFG.thresholds.consolidateMinMsgs || 8;
+  const minHighImp = CFG.thresholds.consolidateMinHighImp || 2;
+  const minImpSum = CFG.thresholds.consolidateMinImpSum || 3.0;
+  const needed = msgs.length >= minMsgs || highImpCount >= minHighImp || impSum >= minImpSum;
+
+  if (!needed) {
+    if (!check) { s.lastConsolidateAt = nowIso(); saveState(s); }
+    return { needed: false, reason: 'below-threshold', newMessages: msgs.length, highImpCount, impSum: Math.round(impSum * 100) / 100 };
+  }
+  if (check) return { needed: true, newMessages: msgs.length, highImpCount, impSum: Math.round(impSum * 100) / 100 };
+
+  const block = buildAutoSummaryBlock(msgs);
+  const medFile = path.join(D.medium, today() + '.md');
+  let med = fs.existsSync(medFile) ? fs.readFileSync(medFile, 'utf8') : `# ${today()} 中期摘要\n`;
+  fs.writeFileSync(medFile, med.trimEnd() + '\n\n' + block.text + '\n');
+  try { reindex(); } catch {}
+  try { buildContentIndex(); } catch {}
+
+  s.lastConsolidateTs = block.lastTs;
+  s.lastConsolidateAt = nowIso();
+  s.autoConsolidations = (s.autoConsolidations || 0) + 1;
+  saveState(s);
+  try { appendDevLog(`自动整合 ${msgs.length} 条 → medium/${today()}.md`); } catch {}
+  return {
+    needed: true, written: `medium/${today()}.md`,
+    messages: msgs.length, highImpCount, topics: block.topics, indexUpdated: true,
+  };
+}
+
+// ============================================================
 // v5.1 P0：长期事实建议 — 从近期摘要提取候选，不自动写 memory.md
+// 改为写入 proposals 文件，由 agent 人工审阅后确认写入（P0 安全加固）
 // ============================================================
 
 const SUGGESTIONS_FILE = path.join(D.engine, 'suggestions.json');
@@ -722,6 +964,8 @@ const SUGGESTIONS_FILE = path.join(D.engine, 'suggestions.json');
 function suggestLongTermFacts() {
   ensureDirs();
   const suggestions = [];
+  // 噪音过滤：排除 exec 错误、调试输出、警报消息
+  const NOISE = /⚠️|Exec failed|exit|\berror\b|警报|pgrep|nohup|SIGTERM|[0-9a-f]{8}-[0-9a-f]{4}/i;
 
   // 扫描最近 3 天的 injectable summaries
   for (const f of fs.readdirSync(D.shortInject).sort().slice(-3)) {
@@ -729,7 +973,7 @@ function suggestLongTermFacts() {
     try {
       const inj = JSON.parse(fs.readFileSync(path.join(D.shortInject, f), 'utf8'));
       for (const fact of inj.facts || []) {
-        if (fact.length > 20 && fact.length < 200) {
+        if (fact.length > 20 && fact.length < 200 && !NOISE.test(fact)) {
           suggestions.push({
             candidate: fact,
             source: `short/inject/${f}`,
@@ -747,6 +991,119 @@ function suggestLongTermFacts() {
     fs.writeFileSync(SUGGESTIONS_FILE, JSON.stringify({ updated_at: nowIso(), suggestions: suggestions.slice(0, 15) }, null, 2));
   }
   return suggestions;
+}
+
+// ============================================================
+// P0 安全：distill proposals — nightly distill 写入候选，agent 审阅后确认
+// ============================================================
+
+function loadDistillProposals() {
+  try { return JSON.parse(fs.readFileSync(DISTILL_PROPOSALS_FILE, 'utf8')); }
+  catch { return { proposals: [], updated_at: null }; }
+}
+
+function saveDistillProposal(entry) {
+  // entry: { section, content, source, confidence, reason }
+  const dp = loadDistillProposals();
+  dp.proposals.push({ ...entry, id: dp.proposals.length + 1, status: 'pending', created_at: nowIso() });
+  dp.updated_at = nowIso();
+  fs.writeFileSync(DISTILL_PROPOSALS_FILE, JSON.stringify(dp, null, 2));
+  // 跟踪最后蒸馏时间（用于离线保护）
+  const s = loadState();
+  s.lastDistillAt = nowIso();
+  saveState(s);
+  return dp.proposals.length;
+}
+
+function cmdDistillProposals(opts) {
+  ensureDirs();
+  const dp = loadDistillProposals();
+  if (opts.list || !opts.apply) {
+    const pending = dp.proposals.filter(p => p.status === 'pending');
+    return out({ total: dp.proposals.length, pending: pending.length, proposals: pending.slice(0, 20), updated_at: dp.updated_at });
+  }
+  // apply: 将指定 proposal 写入 MEMORY.md
+  const id = parseInt(opts.apply, 10);
+  const p = dp.proposals.find(x => x.id === id);
+  if (!p || p.status !== 'pending') return out({ error: 'proposal not found or already processed' });
+
+  if (!acquireLock(`distill-apply-${id}`)) return out({ error: 'lock busy, try later' });
+
+  try {
+    let mem = fs.readFileSync(LONG_FILE, 'utf8');
+    const sectionMarker = `## ${p.section}`;
+    // 查找对应小节，追加条目；不存在则在末尾追加整个小节
+    const idx = mem.indexOf(sectionMarker);
+    if (idx >= 0) {
+      const afterSection = mem.indexOf('\n## ', idx + sectionMarker.length);
+      const insertAt = afterSection >= 0 ? afterSection : mem.length;
+      // 去重：检查是否已有相同内容
+      const sectionContent = mem.slice(idx, insertAt);
+      if (sectionContent.includes(p.content.slice(0, 40))) {
+        p.status = 'skipped'; p.note = '已有相似内容';
+      } else {
+        mem = mem.slice(0, insertAt) + `\n- ${p.content}` + mem.slice(insertAt);
+        p.status = 'applied';
+      }
+    } else {
+      mem += `\n\n${sectionMarker}\n- ${p.content}\n`;
+      p.status = 'applied';
+    }
+    fs.writeFileSync(LONG_FILE, mem);
+    snapshotMEMORY(true);
+    buildContentIndex();
+    appendDevLog(`审阅通过: ${p.content.slice(0, 40)}…`);
+  } finally { releaseLock(); }
+
+  dp.updated_at = nowIso();
+  fs.writeFileSync(DISTILL_PROPOSALS_FILE, JSON.stringify(dp, null, 2));
+  out({ applied: p.status === 'applied', proposal: p });
+}
+
+function cmdDistillReject(opts) {
+  const id = parseInt(opts.id, 10);
+  const dp = loadDistillProposals();
+  const p = dp.proposals.find(x => x.id === id);
+  if (!p) return out({ error: 'proposal not found' });
+  p.status = 'rejected'; p.rejected_at = nowIso(); p.reason = opts.reason || '';
+  dp.updated_at = nowIso();
+  fs.writeFileSync(DISTILL_PROPOSALS_FILE, JSON.stringify(dp, null, 2));
+  out({ rejected: true, proposal: p });
+}
+
+// P1: imp 手动校准 — 修正特定消息的重要性评分
+function cmdImpCalibrate(opts) {
+  const date = opts.date || today();
+  const rawFile = path.join(D.shortRaw, date + '.jsonl');
+  if (!fs.existsSync(rawFile)) return out({ error: 'raw file not found: ' + rawFile });
+  const lines = fs.readFileSync(rawFile, 'utf8').split('\n').filter(l => l.trim());
+  const lineNum = parseInt(opts.line, 10);
+  if (!lineNum || lineNum < 1 || lineNum > lines.length) return out({ error: 'invalid line number, total: ' + lines.length });
+  const target = lines[lineNum - 1];
+  let msg; try { msg = JSON.parse(target); } catch { return out({ error: 'not valid JSON' }); }
+  const oldImp = msg.imp;
+  msg.imp = parseFloat(opts.imp);
+  if (isNaN(msg.imp) || msg.imp < 0 || msg.imp > 1) return out({ error: 'imp must be 0-1' });
+  lines[lineNum - 1] = JSON.stringify(msg);
+  fs.writeFileSync(rawFile, lines.join('\n') + '\n');
+  // 记录校准
+  const calLog = path.join(D.engine, 'imp-calibration.json');
+  let cal = [];
+  try { cal = JSON.parse(fs.readFileSync(calLog, 'utf8')); } catch {}
+  cal.push({ date, line: lineNum, oldImp, newImp: msg.imp, text: String(msg.text || '').slice(0, 80), at: nowIso(), reason: opts.reason || '' });
+  fs.writeFileSync(calLog, JSON.stringify(cal, null, 2));
+  out({ calibrated: true, date, line: lineNum, oldImp, newImp: msg.imp, text: String(msg.text || '').slice(0, 80) });
+}
+
+// P1: 对话记录开关 — 可选择不保存 raw，其他功能照常
+function cmdRecordRaw(opts) {
+  const cfg = loadConfig();
+  const has = (k) => Object.prototype.hasOwnProperty.call(opts, k);
+  if (has('enable')) cfg.recordRaw = true;
+  else if (has('disable')) cfg.recordRaw = false;
+  else return out({ recordRaw: cfg.recordRaw !== false, usage: 'engine.js record-raw --enable|--disable' });
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2));
+  out({ recordRaw: cfg.recordRaw !== false, note: cfg.recordRaw !== false ? '对话记录已开启' : '对话记录已关闭（仅关闭 raw，其他功能正常）' });
 }
 
 // ============================================================
@@ -973,6 +1330,15 @@ function cmdContentIndex(opts) {
 }
 
 // ============================================================
+
+// 记忆层友好名称映射
+const LAYER_NAMES = {
+  working:'工作台', inject:'今日摘要', raw:'对话记录',
+  medium:'中期归档', long:'长期知识', idx:'索引',
+  semantic:'语义搜索',
+};
+function layerName(key) { return LAYER_NAMES[key] || key; }
+
 // P1 查询优先级/权重策略（多路并行召回）
 // ============================================================
 
@@ -1129,6 +1495,9 @@ async function multiPathSearch(query, opts = {}) {
   }
 
   merged.sort((a, b) => b.combinedScore - a.combinedScore);
+  
+  // 替换层名为友好名称
+  for (const r of merged) r.layer = layerName(r.layer);
   
   // 统计各层命中数
   const layerStats = {};
@@ -1349,10 +1718,11 @@ function sendSignalViaHTTP(gwConfig, msg, callback) {
 
 // 本地字向量：中文字符 + 英文词的稀疏哈希向量（零依赖，无网络也能用）
 function localEmbed(text) {
-  const dim = 512;
+  const cfg = loadConfig();
+  const dim = cfg.embed.dims || 512;
   const v = new Float64Array(dim);
   const t = String(text).toLowerCase();
-  // 中文单字 + 双字
+  // 中文 unigram + bigram + trigram（更好的语义捕获）
   for (let i = 0; i < t.length; i++) {
     const c = t[i];
     if (/[\u4e00-\u9fff]/.test(c)) {
@@ -1566,11 +1936,11 @@ function cmdBackupLog() {
 // ============================================================
 
 const CLEANUP_RULES = {
-  injectMaxDays: 7,        // 可注入摘要保留 7 天
-  trashMaxDays: 15,       // 回收站保留 15 天
-  suggestionsMaxDays: 14,   // 候选建议保留 14 天
-  debugLogMaxDays: 3,       // 调试日志保留 3 天
-  emptyDirs: true,          // 清理空目录
+  get injectMaxDays() { return loadConfig().retention.injectDays; },
+  get trashMaxDays() { return loadConfig().retention.trashDays; },
+  get suggestionsMaxDays() { return loadConfig().retention.suggestionDays; },
+  get debugLogMaxDays() { return loadConfig().retention.logDays; },
+  emptyDirs: true,
   dryRun: false,
 };
 
@@ -1711,7 +2081,7 @@ function sanitizeText(text) {
   return s;
 }
 
-// 存储前压缩：去表格、截代码块、收空白
+// 存储前压缩：去表格、截代码块、收空白、截断长文本
 function compressForStorage(text) {
   let s = String(text || '');
   // Markdown 表格 → 压缩标注
@@ -1724,13 +2094,51 @@ function compressForStorage(text) {
     const lang = m.match(/```(\w+)/);
     return lang ? `[代码块: ${lang[1]}]` : '[代码块]';
   });
+  // JSON/大段数据 → 摘要
+  s = s.replace(/(\{[\s\S]{200,}\}|\[[\s\S]{200,}\])/g, (m) => {
+    try { const o=JSON.parse(m); const keys=Array.isArray(o)?`[${o.length}项]`:Object.keys(o).join(','); return `[JSON: ${keys}]`; }
+    catch { return m.length>200?`[数据: ${m.length}字符]`:m; }
+  });
   // 多连续空行 → 单空行
   s = s.replace(/\n{3,}/g, '\n\n');
   // 超长分隔线 → 短
   s = s.replace(/^[-=*_]{10,}$/gm, '---');
-  // 截断到 1500 字符
-  if (s.length > 1500) s = s.slice(0, 1500) + '…';
+  // 截断：可配置
+  const maxChars = CFG.thresholds.rawMaxChars || 800;
+  if (s.length > maxChars) s = s.slice(0, maxChars) + '…';
   return s.trim();
+}
+
+// ============================================================
+// v2 配置管理
+// ============================================================
+
+function cmdConfig(opts) {
+  ensureDirs();
+  const cfg = loadConfig();
+  if (opts.get) {
+    const path = opts.get.split('.');
+    let v = cfg;
+    for (const p of path) { if (v && typeof v === 'object') v = v[p]; else break; }
+    return out({ key: opts.get, value: v });
+  }
+  if (opts.set && opts.value !== undefined) {
+    const path2 = opts.set.split('.');
+    let newCfg = JSON.parse(JSON.stringify(cfg));
+    let target = newCfg;
+    for (let i = 0; i < path2.length - 1; i++) { if (!target[path2[i]]) target[path2[i]] = {}; target = target[path2[i]]; }
+    const last = path2[path2.length - 1];
+    let val = opts.value;
+    if (val === 'true') val = true; else if (val === 'false') val = false; else if (!isNaN(Number(val))) val = Number(val);
+    target[last] = val;
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(newCfg, null, 2));
+    return out({ set: true, key: opts.set, value: val, note: '已更新。下次 sync 生效。' });
+  }
+  if (opts.reset !== undefined) {
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(DEFAULT_CONFIG, null, 2));
+    return out({ reset: true, note: '配置已恢复默认' });
+  }
+  out(cfg);
 }
 
 // ============================================================
@@ -1819,8 +2227,11 @@ function cmdRecord(role, text) {
   if (!text.trim()) return out({ recorded: false, reason: 'empty' });
 
   const imp = importanceOf(role, text);
-  const line = JSON.stringify({ ts: nowIso(), role, text, imp }) + '\n';
-  fs.appendFileSync(path.join(D.shortRaw, `${today()}.jsonl`), line);
+  // 可选开关：允许关闭对话记录（raw），其他功能照常
+  if (CFG.recordRaw !== false) {
+    const line = JSON.stringify({ ts: nowIso(), role, text, imp }) + '\n';
+    fs.appendFileSync(path.join(D.shortRaw, `${today()}.jsonl`), line);
+  }
 
   // v5.1 P0：高重要性消息触发工作记忆刷新
   if (imp >= 0.5) {
@@ -1851,7 +2262,10 @@ function cmdRecord(role, text) {
   // 每次落盘顺带补录转录里的消息 + 索引补全（增量，开销小）
   syncTranscripts();
   reindex();
-  out({ recorded: true, turns: s.turns, totalMessages: s.totalMessages, imp });
+  // v5.2：自动整合检查（节流，满足条件才写中期摘要块）
+  let consolidated = null;
+  try { consolidated = autoConsolidate(); } catch {}
+  out({ recorded: true, turns: s.turns, totalMessages: s.totalMessages, imp, consolidated });
 }
 
 function cmdStatus() {
@@ -1862,20 +2276,24 @@ function cmdStatus() {
   s.nextSignalIn = Math.min(s.nextShortIn, s.nextMediumIn);
   s.root = ROOT;
   s.engineDir = ENGINE_DIR;
-  s.version = 'Mnemosyne v1';
+  s.version = 'Mnemosyne v2';
   // 附加 v5 状态
   const vec = loadVectors();
   s.semanticEnabled = s.semanticEnabled || false;
   s.semanticIndex = { enabled: s.semanticEnabled, items: vec.items.length, mode: vec.mode, updatedAt: vec.updatedAt, remoteFailed: vec.remoteFailed || false };
   const todos = loadTodos();
   s.todos = { total: todos.length, open: todos.filter(t => t.status === 'open').length };
-  s.retention = { shortDays: SHORT_RETAIN_DAYS, mediumDays: MEDIUM_RETAIN_DAYS };
+  const c2 = loadConfig(); s.retention = c2.retention; s.config = { weights: c2.weights };
   // v5.1 P0 状态
   let wm = null;
   try { wm = JSON.parse(fs.readFileSync(WORKING_FILE, 'utf8')); }
   catch { wm = { current_task: '(未初始化)' }; }
   s.workingMemory = { task: wm.current_task, state: wm.task_state, decisions: (wm.recent_decisions || []).length, questions: (wm.open_questions || []).length };
-  s.shortLayers = { raw: fs.existsSync(D.shortRaw) ? fs.readdirSync(D.shortRaw).filter(f => f.endsWith('.jsonl')).length : 0, working: fs.existsSync(WORKING_FILE), inject: fs.existsSync(D.shortInject) ? fs.readdirSync(D.shortInject).filter(f => f.endsWith('.json')).length : 0 };
+  s.shortLayers = { 对话记录: fs.existsSync(D.shortRaw) ? fs.readdirSync(D.shortRaw).filter(f => f.endsWith('.jsonl')).length : 0, 工作台: fs.existsSync(WORKING_FILE), 今日摘要: fs.existsSync(D.shortInject) ? fs.readdirSync(D.shortInject).filter(f => f.endsWith('.json')).length : 0 };
+  // P1: pending distill proposals
+  const dp = loadDistillProposals();
+  s.pendingProposals = dp.proposals.filter(p => p.status === 'pending').length;
+  s.recordRaw = CFG.recordRaw !== false;
   out(s);
 }
 
@@ -1939,6 +2357,9 @@ function cmdSync() {
   // 6. 中期摘要实时检测
   let mediumNeeded = false;
   try { mediumNeeded = checkMediumNeeded(); } catch {}
+  // 6.5 v5.2：自动整合（无需提醒，自动写中期摘要 + 索引）
+  let consolidated = null;
+  try { consolidated = autoConsolidate(); } catch {}
   // 7. 长期事实建议
   let suggestions = 0;
   try { suggestions = suggestLongTermFacts().length; } catch {}
@@ -1954,19 +2375,97 @@ function cmdSync() {
   // 9. MEMORY.md 版本快照
   let version = null;
   try { version = snapshotMEMORY(); buildContentIndex(); } catch {}
+  // 10. 离线保护：如果超过 20 小时未蒸馏，自动补充 proposals
+  let distillCatchUp = null;
+  try {
+    const s2 = loadState();
+    const hoursSinceDistill = s2.lastDistillAt ? (Date.now() - new Date(s2.lastDistillAt).getTime()) / 3600000 : 999;
+    if (hoursSinceDistill > 20) {
+      const dp = loadDistillProposals();
+      const hasPendingDistill = dp.proposals.some(p => p.source === 'catch-up' && p.created_at > new Date(Date.now() - 86400000).toISOString());
+      if (!hasPendingDistill) {
+        const facts = suggestLongTermFacts();
+        for (const f of facts.slice(0, 5)) {
+          saveDistillProposal({ section: '重要事件', content: f.candidate, source: 'catch-up', confidence: f.confidence });
+        }
+        s2.lastDistillAt = nowIso();
+        saveState(s2);
+        distillCatchUp = facts.length;
+      }
+    }
+  } catch {}
 
   out({
     synced, reindexed, archived,
     working: working ? { task: working.current_task, state: working.task_state, decisions: working.recent_decisions.length, questions: working.open_questions.length } : null,
     inject: inject ? { topics: inject.topics, facts: inject.facts.length, decisions: inject.decisions.length, confidence: inject.confidence } : null,
-    mediumNeeded, suggestions, todos: todoStats,
+    mediumNeeded, consolidated, suggestions, todos: todoStats,
     rawTrimmed, compensation: compensation ? compensation.length : 0, compensationIssues: compensation,
     version: version ? version.version : null, at: nowIso(),
+    distillCatchUp,
   });
+  try { autoDevLog(synced, inject, working); } catch {}
 }
 
 function cmdReindex() {
   out(reindex());
+}
+
+// v2: 索引进化日志 — 记录开发迭代，高频更新
+const DEVLOG_MARKER = '<!-- devlog:start -->';
+const DEVLOG_END = '<!-- devlog:end -->';
+
+function appendDevLog(entry) {
+  ensureDirs();
+  const ts = new Date().toISOString().replace('T',' ').slice(0,19);
+  const line = `| ${ts} | ${entry} |`;
+  let idx = fs.existsSync(INDEX_FILE) ? fs.readFileSync(INDEX_FILE, 'utf8') : loadTemplate('index.md');
+  
+  // 去重：同一分钟内不重复记录相同事件
+  if (idx.includes(entry.slice(0,30))) return null;
+  
+  // 插入到开发日志表格头部（最新在前）
+  if (idx.includes(DEVLOG_MARKER)) {
+    idx = idx.replace(DEVLOG_MARKER, DEVLOG_MARKER + '\n' + line);
+  } else {
+    // 首次：在索引标题后插入开发日志节
+    const h1End = idx.indexOf('\n', idx.indexOf('# '));
+    const devSection = `\n\n## 🛠 开发日志\n\n| 时间 | 事件 |\n|------|------|\n${DEVLOG_MARKER}\n${line}\n${DEVLOG_END}\n`;
+    idx = idx.slice(0, h1End + 1) + devSection + idx.slice(h1End + 1);
+  }
+  fs.writeFileSync(INDEX_FILE, idx);
+  return line;
+}
+
+function cmdDevLog(opts) {
+  ensureDirs();
+  if (opts.log) {
+    const line = appendDevLog(opts.log);
+    return out({ logged: true, line });
+  }
+  // 查看最近日志
+  const idx = fs.existsSync(INDEX_FILE) ? fs.readFileSync(INDEX_FILE, 'utf8') : '';
+  const section = idx.match(/## 开发日志\n[\s\S]*/);
+  const lines = section ? section[0].split('\n').filter(l => l.startsWith('|') && l.includes('|')) : [];
+  out({ total: lines.length, recent: lines.slice(-10) });
+}
+
+// 在 sync 中自动记录变更到 daily note + devlog
+function autoDevLog(synced, inject, working) {
+  const parts = [];
+  if (synced && synced.added > 0) parts.push(`转录补录 ${synced.added} 条`);
+  if (inject && inject.facts > 0) parts.push(`生成摘要 ${inject.facts} 事实`);
+  if (working && working.task_state === 'in_progress') parts.push(`任务: ${working.current_task.slice(0,30)}`);
+  if (parts.length) appendDevLog(parts.join(' | '));
+  // 同时追加到 daily note（短期记忆时间轴）
+  try {
+    const dailyNote = path.join(MEM, today() + '.md');
+    const ts = new Date().toTimeString().slice(0,5);
+    const entry = `- ${ts} sync: ${parts.length ? parts.join('；') : '无变更'}\n`;
+    if (!fs.existsSync(dailyNote) || !fs.readFileSync(dailyNote,'utf8').includes(entry.trim())) {
+      fs.appendFileSync(dailyNote, entry);
+    }
+  } catch {}
 }
 
 // ============================================================
@@ -2084,6 +2583,21 @@ function keywordSearch(query) {
 
   for (const { full, rel } of allMemoryFiles()) {
     try {
+      // P1: gz 文件先用轻量索引筛选，命中才解压
+      if (full.endsWith('.gz') && rel.includes('short/archive/')) {
+        const idxFile = path.join(path.dirname(full), path.basename(full, '.jsonl.gz') + '.idx.json');
+        if (fs.existsSync(idxFile)) {
+          try {
+            const idx = JSON.parse(fs.readFileSync(idxFile, 'utf8'));
+            const matched = idx.some(e => {
+              const combined = (e.kw || '') + ' ' + q;
+              return combined.toLowerCase().includes(q) || terms.some(t => combined.toLowerCase().includes(t));
+            });
+            if (!matched) continue; // 索引无匹配，跳过解压
+          } catch {}
+        }
+      }
+
       const txt = readMaybeGz(full);
       const lines = txt.split('\n');
       const hits = [];
@@ -2344,11 +2858,11 @@ function cmdTimeline() {
 // CLI 入口
 // ============================================================
 
-const HELP = `Mnemosyne v1 — OpenClaw 分层记忆引擎
+const HELP = `Mnemosyne v2 — OpenClaw 分层记忆引擎
 
 Mnemosyne（谟涅摩绪涅）：希腊记忆女神，缪斯之母
 中期+长期: 状态字段 active|candidate|disputed|superseded|archived
-memory.md: 引擎建议候选事实 → 人工确认后写入（不自动覆盖）
+memory.md: nightly distill → proposals 文件 → agent 审阅确认后写入（人工把关）
 
 用法: engine.js <command> [options]
 
@@ -2360,6 +2874,7 @@ memory.md: 引擎建议候选事实 → 人工确认后写入（不自动覆盖�
   init                                              初始化目录结构
   sync                                              转录补录 + 索引补全 + 归档 + 待办提取
   reindex                                           扫描中期摘要块补齐索引
+  consolidate [--check | --force]                   自动整合：新对话→中期摘要块+索引（无需提醒）
   search    --query "关键词" [--mode keyword|semantic|hybrid|recent|history]  多模式搜索
   stats                                             统计仪表盘
   health                                            健康度检查
@@ -2386,9 +2901,14 @@ v5 新增 — 会话 & 权限:
   sessions                                          多会话聚合视图（48h 内有效）
   permission [--agent <id> --level read|write|admin]  查看/设置访问权限
   permission --default read|write                   设置默认权限级别
+  config    [--get key | --set key --value val | --reset]  查看/修改配置
+  devlog    [--log "事件"]                          开发日志（查看/追加迭代记录）
   cleanup   [--dry] [--confirm]                     清理无用文件（inject/日志/过期建议）
+  imp-calibrate --date "YYYY-MM-DD" --line <N> --imp 0.8  手动校准消息重要性（P1）
   reindex-all [--force]                              全量索引重建（语义+内容+索引+TODO）
   restore    [--list | --id <vid> | --from latest]   从版本快照恢复 MEMORY.md
+  distill-proposals [--list | --apply <id>]         查看/审阅并应用长期记忆候选建议
+  distill-reject --id <id> [--reason "..."]        拒绝某个候选建议
 
 查询模式说明:
   search --mode keyword   → 关键词精确+模糊匹配（默认）
@@ -2418,6 +2938,7 @@ function main() {
     case 'init':     cmdInit(); break;
     case 'sync':     cmdSync(); break;
     case 'reindex':  cmdReindex(); break;
+    case 'consolidate': out(autoConsolidate({ force: has('force'), check: has('check') })); break;
     case 'search':   cmdSearch(opts.query, opts).catch(e => { console.error(e.message); process.exit(1); }); break;
     case 'stats':    cmdStats(); break;
     case 'health':   cmdHealth(); break;
@@ -2435,9 +2956,22 @@ function main() {
     case 'conflict': cmdConflict(); break;
     case 'content-index': cmdContentIndex(opts); break;
     case 'permission': cmdPermission(opts); break;
+    case 'config':    cmdConfig(opts); break;
+    case 'devlog':    cmdDevLog(opts); break;
     case 'cleanup':   cmdCleanup(opts); break;
     case 'reindex-all': cmdReindexAll(opts); break;
     case 'restore':    cmdRestore(opts); break;
+    case 'distill-proposals': cmdDistillProposals(opts); break;
+    case 'distill-reject': cmdDistillReject(opts); break;
+    case 'imp-calibrate': cmdImpCalibrate(opts); break;
+    case 'record-raw': cmdRecordRaw(opts); break;
+    case 'save-distill': {
+      const entry = { section: opts.section || '重要事件', content: opts.content || '', source: opts.source || 'nightly-distill', confidence: parseFloat(opts.confidence) || 0.5 };
+      if (!entry.content) { console.error('--content required'); process.exit(1); }
+      const count = saveDistillProposal(entry);
+      out({ saved: true, total: count });
+      break;
+    }
     default:
       console.error(HELP);
       process.exit(cmd ? 1 : 0);

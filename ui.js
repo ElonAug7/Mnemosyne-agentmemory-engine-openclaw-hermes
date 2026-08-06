@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * memory-ui — 记忆系统本地管理界面 v3-lite
+ * memory-ui — 记忆系统本地管理界面 v3
  *
  * 纯 Node.js（无第三方依赖），监听 127.0.0.1:8765（仅本机访问）。
  * 功能：
@@ -8,7 +8,7 @@
  *   - 文件搜索、返回键、下载原文
  *   - 引擎状态、一键开关自动记录、手动触发摘要信号
  *
- * v3-lite 精简版：
+ * v3 安全加固：
  *   - 写操作（delete/restore/purge/backup/enable 等）强制 POST
  *   - CSRF 保护：POST 请求校验 Origin/Referer
  *   - /api/delete 复用 safePath() 白名单
@@ -188,7 +188,7 @@ const server = http.createServer(async (req, res) => {
 
   try {
     if (url.pathname === '/') {
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache, no-store, must-revalidate' });
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       return res.end(PAGE);
     }
 
@@ -520,9 +520,12 @@ const server = http.createServer(async (req, res) => {
     // ═══════ 静态资源 ═══════
     if (url.pathname === '/api/logo') {
       const logoPaths = [
-        path.join(__dirname, 'logo.png'), path.join(__dirname, 'logo.jpg'),
-        path.join(__dirname, 'logo.jpeg'), path.join(__dirname, 'logo.webp'),
-        path.join(__dirname, 'logo.gif'), path.join(__dirname, 'logo.svg'),
+        path.join(__dirname, 'logo.png'),
+        path.join(__dirname, 'logo.jpg'),
+        path.join(__dirname, 'logo.jpeg'),
+        path.join(__dirname, 'logo.webp'),
+        path.join(__dirname, 'logo.gif'),
+        path.join(__dirname, 'logo.svg'),
       ];
       for (const lp of logoPaths) {
         if (fs.existsSync(lp)) {
@@ -544,5 +547,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`Mnemosyne v3-lite UI listening on http://${HOST}:${PORT} (workspace: ${ROOT})`);
+  console.log(`Mnemosyne v3 UI listening on http://${HOST}:${PORT} (workspace: ${ROOT})`);
 });

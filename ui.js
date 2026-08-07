@@ -580,5 +580,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`Mnemosyne v3 UI listening on http://${HOST}:${PORT} (workspace: ${ROOT})`);
+  console.log(`Mnemosyne v4 Pro UI listening on http://${HOST}:${PORT} (workspace: ${ROOT})`);
 });

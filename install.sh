@@ -7,11 +7,11 @@
 # 用法（两种方式任选其一）：
 #
 #   方法一（推荐）: 手动放到工作区
-#     1. cp -r Mnemosyne-v4 ~/.openclaw/workspace/tools/
-#     2. cd ~/.openclaw/workspace/tools/Mnemosyne-v4 && bash install.sh
+#     1. cp -r Mnemosyne-v4-pro ~/.openclaw/workspace/tools/
+#     2. cd ~/.openclaw/workspace/tools/Mnemosyne-v4-pro && bash install.sh
 #
 #   方法二: 从任意位置一键部署
-#     1. bash /path/to/Mnemosyne-v4/install.sh
+#     1. bash /path/to/Mnemosyne-v4-pro/install.sh
 #     脚本自动检测 → 复制到 workspace/tools/memory-engine → 完成安装
 #
 # 自动完成：
@@ -67,7 +67,7 @@ ENGINE_DIR="$SELF_DIR"
 HOOK_DIR="$HOME/.openclaw/hooks/memory-recorder"
 UI_PORT="${MEMORY_UI_PORT:-8765}"
 
-echo "🧠 Mnemosyne v4 安装程序"
+echo "🧠 Mnemosyne v4 Pro 安装程序"
 echo ""
 echo "   v4 核心特性："
 echo "   🧠 记忆回响：context · recall · report · profile · ask"

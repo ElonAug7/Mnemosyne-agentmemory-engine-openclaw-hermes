@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Mnemosyne v4 — OpenClaw 可移植分层记忆引擎
+ * Mnemosyne v4 Pro — OpenClaw 可移植分层记忆引擎
  *
  * 命名来源：Mnemosyne（谟涅摩绪涅），希腊记忆女神，缪斯之母。
  *
@@ -252,19 +252,36 @@ const IMP_CHITCHAT = /^(哈哈+|嗯+|ok\s*$|okay\s*$|谢谢\s*$|收到\s*$|明�
 function importanceOf(role, text) {
   const t = String(text || '').trim();
   if (!t) return 0;
+
+  // Fix 1: 系统消息直接判最低分
+  if (/^(Continue the|<<<BEGIN_|\u26a0\ufe0f Agent|System |\[System\]|XHR POST|data: |\{"schema":)/.test(t)) return 0.02;
+  // Fix 1: 纯闲聊单字/表情（<4字或无实际语义）
+  if (t.length < 4 && !/[\u4e00-\u9fff]/.test(t)) return 0.08;
+
   if (IMP_CHITCHAT.test(t)) return 0.1;
   let score = role === 'user' ? 0.40 : 0.3;
-  // 指令/操作类：用户明确要求执行动作
+
+  // 常规加权
   if (IMP_INSTRUCT.test(t))  score += 0.25;
-  // 偏好/原则类：用户价值观和底线
   if (IMP_PREF.test(t))     score += 0.35;
-  // 技术/分析类
   if (IMP_TECH.test(t))     score += 0.12;
   if (IMP_DECISION.test(t)) score += 0.3;
   if (IMP_TODO.test(t))     score += 0.25;
   if (IMP_FACT.test(t))     score += 0.1;
+
+  // Fix 2: 核心原则额外加权（在常规基础上再加）
+  if ((/必须|一定|不能|不许|禁止|核心原则|零依赖|隐私第一|不上传|不引入/.test(t)) &&
+      (/本地|云端|依赖|上传|隐私|开源|Node|第三方|数据/.test(t))) {
+    score += 0.15;
+  }
+
+  // Fix 3: 长文本方向性检测（>100字+方向词）
+  if (t.length > 100 && /优先级|方向|架构|定位|原则|可行性|评估|竞品|对标|差异化/.test(t)) {
+    score = Math.max(score, 0.75);
+  }
+
   if (role === 'user' && /[?？]\s*$/.test(t)) score += 0.05;
-  if (t.length > 500) score += 0.05; // 长消息通常信息量大
+  if (t.length > 500) score += 0.05;
   return Math.min(1, Math.round(score * 100) / 100);
 }
 
@@ -2489,7 +2506,7 @@ function cmdStatus() {
   s.nextSignalIn = Math.min(s.nextShortIn, s.nextMediumIn);
   s.root = ROOT;
   s.engineDir = ENGINE_DIR;
-  s.version = 'Mnemosyne v4';
+  s.version = 'Mnemosyne v4 Pro';
   // 附加 v5 状态
   const vec = loadVectors();
   s.semanticEnabled = s.semanticEnabled || false;
@@ -3609,7 +3626,7 @@ function cmdAsk(opts) {
 // CLI 入口
 // ============================================================
 
-const HELP = `Mnemosyne v4 — OpenClaw 分层记忆引擎
+const HELP = `Mnemosyne v4 Pro — OpenClaw 分层记忆引擎
 
 Mnemosyne（谟涅摩绪涅）：希腊记忆女神，缪斯之母
 中期+长期: 状态字段 active|candidate|disputed|superseded|archived

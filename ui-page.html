@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Mnemosyne v4 · 小爪记忆系统</title>
+<title>Mnemosyne v4 Pro · 小爪记忆系统</title>
 <style>
 :root{--bg:#0f1319;--card:#181f29;--card2:#1e2733;--fg:#e6e9ef;--dim:#8b95a5;--acc:#4da3ff;--ok:#3ecf8e;--warn:#f5a623;--err:#e06c5c;--line:#2a323e}
 *{box-sizing:border-box;scrollbar-width:thin;scrollbar-color:var(--line) transparent}
@@ -84,7 +84,7 @@ pre{white-space:pre-wrap;word-break:break-word;font-size:13px;background:#10151c
 <body>
 <header>
   <img src="/api/logo" style="height:28px;border-radius:5px;vertical-align:middle" alt="小爪">
-  <div><h1>Mnemosyne <span style="font-size:10px;color:var(--dim);font-weight:400">v4</span></h1></div>
+  <div><h1>Mnemosyne <span style="font-size:10px;color:var(--dim);font-weight:400">v4 Pro</span></h1></div>
   <div class="spacer"></div>
   <span class="badge on" id="badge">● 已开启</span>
 </header>
@@ -161,7 +161,7 @@ pre{white-space:pre-wrap;word-break:break-word;font-size:13px;background:#10151c
 <div id="trash-list"></div>
 <div style="margin-top:10px;display:flex;gap:8px"><button class="btn" onclick="closeTrash()">关闭</button><button class="btn" style="color:var(--err)" onclick="if(confirm('确定清空？')){fetch('/api/trash').then(r=>r.json()).then(d=>{if(d.items)d.items.forEach(i=>apiPost('/api/trash/purge',{id:i.trashId}));toast('已清空');showTrash()})}">清空</button></div></div></div>
 
-<div style="position:fixed;bottom:4px;right:16px;font-size:8px;color:var(--dim);opacity:.3;z-index:1">🦞 v4 · POST+CSRF</div>
+<div style="position:fixed;bottom:4px;right:16px;font-size:8px;color:var(--dim);opacity:.3;z-index:1">🦞 v4 Pro · POST+CSRF</div>
 
 <script>
 "use strict";

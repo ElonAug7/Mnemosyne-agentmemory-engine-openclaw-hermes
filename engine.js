@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Mnemosyne v3 — OpenClaw 可移植分层记忆引擎
+ * Mnemosyne v4 — OpenClaw 可移植分层记忆引擎
  *
  * 命名来源：Mnemosyne（谟涅摩绪涅），希腊记忆女神，缪斯之母。
  *
@@ -233,7 +233,9 @@ const IMP_DECISION = /决定|确认|结论|选定|采纳|最终方案|定了|拍
 const IMP_TODO     = /待办|todo|fixme|下一步|计划|回头|稍后|提醒我|记得|别忘了|截止|deadline|明天|后天/i;
 const IMP_FACT     = /\d+\s*(元|块|￥|\$|天|小时|点|号|月|年|%)/;
 const IMP_TECH     = /优化|改进|重构|架构|设计|代码|bug|修复|性能|安全|配置|系统|功能|模块|评估|分析|方案/i;
-const IMP_CHITCHAT = /^(哈哈+|嗯+|好的?|ok|okay|谢谢|收到|明白|6+|👍|🙏|😄|😂|❤️)\s*[!！。.~]*$/i;
+const IMP_INSTRUCT = /^(帮|给我|请|现在|先|做|改|写|实现|升级|修复|安装|部署|配置|运行|更新|检查|修|加|删除|补|合并|拆分|测试|验证|审计|发布|回滚|把|继续|然后)/i;
+const IMP_PREF     = /喜欢|不喜欢|偏好|必须|不能|不许|不准|不要|坚决|原则|底线|风格|配色|习惯|想要/i;
+const IMP_CHITCHAT = /^(哈哈+|嗯+|ok\s*$|okay\s*$|谢谢\s*$|收到\s*$|明白\s*$|6+\s*$|👍|🙏|😄|😂|❤️)\s*[!！。.~]*$/i;
 
 // imp 评分逻辑（文档化，P1 可校准）
 // 基准: user=0.35, assistant=0.30
@@ -251,8 +253,12 @@ function importanceOf(role, text) {
   const t = String(text || '').trim();
   if (!t) return 0;
   if (IMP_CHITCHAT.test(t)) return 0.1;
-  let score = role === 'user' ? 0.35 : 0.3;
-  // 技术/分析类：先加权（避免被后续决策/todo覆盖）
+  let score = role === 'user' ? 0.40 : 0.3;
+  // 指令/操作类：用户明确要求执行动作
+  if (IMP_INSTRUCT.test(t))  score += 0.25;
+  // 偏好/原则类：用户价值观和底线
+  if (IMP_PREF.test(t))     score += 0.35;
+  // 技术/分析类
   if (IMP_TECH.test(t))     score += 0.12;
   if (IMP_DECISION.test(t)) score += 0.3;
   if (IMP_TODO.test(t))     score += 0.25;
@@ -560,7 +566,7 @@ const TODO_NOISE = [
 ];
 
 function isTodoNoise(text) {
-  if (text.length < 8) return true; // 至少 8 字符（约 4 个中文词）
+  if (text.length < 3) return true; // 至少 3 字符（约 1 个中文词）
   // 纯标点/虚词
   if (/^[，,。.、！!？?；;：:…""''\s]+$/.test(text)) return true;
   // 匹配噪音模式
@@ -630,17 +636,13 @@ function extractTodos() {
     }
   }
 
-  // 2. 从最近 7 天短期对话提取
+  // 2. 从最近 7 天短期对话提取 — 已禁用（噪音太多）
+  // 待办现在只从 medium 摘要块和手动添加获取
+  /* 已禁用：
   for (const f of fs.readdirSync(D.short)) {
-    const m = f.match(/^(\d{4}-\d{2}-\d{2})\.jsonl$/);
-    if (!m || daysAgo(m[1]) > 7) continue;
-    for (const line of fs.readFileSync(path.join(D.short, f), 'utf8').split('\n')) {
-      if (!line.trim()) continue;
-      let o; try { o = JSON.parse(line); } catch { continue; }
-      if (o.role !== 'user') continue;
-      for (const t of extractTodosFromText(o.text, `short/${f}`)) add(t.text, t.src);
-    }
+    ...
   }
+  */
 
   saveTodos(todos);
   return { added, total: todos.length, open: todos.filter(t => t.status === 'open').length };
@@ -722,10 +724,36 @@ function buildWorkingMemory() {
     .slice(-6)
     .map(l => String(l.text || '').replace(/\n/g, ' ').slice(0, 100));
 
+  // ⑪ P3 对话模式识别：统计 user 消息句式
+  const allUserMsgs = rawLines.filter(l => l.role === 'user').slice(-10);
+  let instructionCount = 0, questionCount = 0, confirmCount = 0;
+  for (const m of allUserMsgs) {
+    const t = String(m.text || '').trim();
+    if (/^(帮我|给我|请|现在|先|做|改|写|实现|升级|修复|安装|配置|运行|部署)/.test(t)) instructionCount++;
+    else if (/^[怎么什么为如何谁哪]/.test(t) || /[?？]$/.test(t)) questionCount++;
+    else if (/^[好行对可嗯OKok]/.test(t) || /确认|收到|明白|懂了|了解/.test(t)) confirmCount++;
+  }
+  let pattern = 'discussion';
+  const maxCount = Math.max(instructionCount, questionCount, confirmCount, allUserMsgs.length * 0.3);
+  if (instructionCount === maxCount && instructionCount > 0) pattern = 'instruction';
+  else if (questionCount === maxCount && questionCount > 0) pattern = 'question';
+  else if (confirmCount === maxCount && confirmCount > 0) pattern = 'confirmation';
+
+  // ⑮ P3 知识缺口检测
+  const knowledge_gaps = [];
+  for (const m of allUserMsgs) {
+    const t = String(m.text || '');
+    if (/不知道|查一下|没找到|搜一下|帮我搜|搜索一下|帮我查/.test(t) && t.length > 10) {
+      knowledge_gaps.push(t.replace(/\n/g, ' ').slice(0, 100));
+      if (knowledge_gaps.length >= 3) break;
+    }
+  }
+
   const wm = {
     current_task: currentTask, task_state: taskState,
     recent_decisions: decisions, open_questions: openQuestions,
-    recent_facts: facts,
+    recent_facts: facts, pattern,
+    knowledge_gaps: knowledge_gaps.length ? knowledge_gaps : undefined,
     source_msg_count: recent.length, updated_at: nowIso(),
   };
   fs.writeFileSync(WORKING_FILE, JSON.stringify(wm, null, 2));
@@ -889,6 +917,15 @@ function buildAutoSummaryBlock(msgs) {
   const highImp = msgs.filter(m => (m.imp || 0) >= 0.5);
   const clean = t => String(t || '').replace(/\s+/g, ' ').trim();
 
+  // ⑦ P2 话题标签：根据内容自动分类
+  const allText = msgs.map(m => String(m.text || '')).join(' ');
+  const tags = [];
+  if (IMP_DECISION.test(allText)) tags.push('#decision');
+  if (/计划|下一步|明天|后天|deadline|截止|todo|fixme/i.test(allText)) tags.push('#planning');
+  if (/优化|架构|代码|bug|修复|性能|重构|设计|安全|配置|模块/i.test(allText)) tags.push('#tech');
+  if (/偏好|喜欢|风格|习惯|想要|希望/i.test(allText)) tags.push('#preference');
+  if (/^哈哈|^666|^👍|^好的?$|^嗯+|^ok$/i.test(allText)) tags.push('#casual');
+
   // 话题词频（优先高重要性消息）
   const topicFreq = {};
   for (const m of (highImp.length ? highImp : msgs)) {
@@ -924,14 +961,74 @@ function buildAutoSummaryBlock(msgs) {
   const firstTs = times[0], lastTs = times[times.length - 1];
   const now = localHM(Date.now());
   const title = `自动摘要 ${localHM(firstTs)}–${localHM(lastTs)}（${msgs.length}条）`;
+  const tagSuffix = tags.length ? ' ' + tags.slice(0, 3).join(' ') : '';
 
-  const lines = [`## ${now} ${title}`];
+  const lines = [`## ${now} ${title}${tagSuffix}`];
   lines.push(`- 结论/决策：${decisions.length ? decisions.join('；') : '无'}`);
   lines.push(`- 关键事实：${facts.length ? facts.join('；') : '无'}`);
   lines.push(`- 待办：${todos.length ? todos.join('；') : '无'}`);
   lines.push(`- 关键词：${topics.length ? topics.join(', ') : '一般对话'}`);
 
-  return { text: lines.join('\n'), title, topics, lastTs: new Date(lastTs).toISOString() };
+  // ⑱ 摘要质量自评
+  const qualityIssues = [];
+  if (!decisions.length) qualityIssues.push('缺少决策/结论');
+  if (!facts.length) qualityIssues.push('缺少关键事实');
+  if (!todos.length) qualityIssues.push('缺少待办');
+  if (topics.length < 2) qualityIssues.push('关键词不足');
+  const qualityNote = qualityIssues.length ? `<!-- quality: ${qualityIssues.join(', ')} -->` : '<!-- quality: ✅ 完整 -->';
+  lines.push(qualityNote);
+
+  return { text: lines.join('\n'), title, topics, tags, lastTs: new Date(lastTs).toISOString() };
+}
+
+// P0: 批量补旧摘要块的标签和质量自评（纯正则，不调 LLM）
+function retagAllBlocks() {
+  ensureDirs();
+  let taggedBlocks = 0, qualityAdded = 0, filesChanged = 0;
+  for (const f of fs.readdirSync(D.medium).sort()) {
+    if (!f.endsWith('.md')) continue;
+    const medFile = path.join(D.medium, f);
+    let content = fs.readFileSync(medFile, 'utf8');
+    let changed = false;
+    const sections = content.split(/^## /m);
+    const newSections = [sections[0]]; // 文件头
+    for (let i = 1; i < sections.length; i++) {
+      let sec = sections[i];
+      // 补话题标签
+      if (!/#decision|#planning|#tech|#preference|#casual/.test(sec.split('\n')[0])) {
+        const tags = [];
+        const header = sec.split('\n')[0];
+        const body = sec.split('\n').slice(1).join(' ');
+        if (IMP_DECISION.test(body)) tags.push('#decision');
+        if (/计划|下一步|明天|待办|todo/i.test(body)) tags.push('#planning');
+        if (/优化|架构|代码|bug|修复|性能|配置|模块/i.test(body)) tags.push('#tech');
+        if (/偏好|喜欢|风格|习惯|想要/i.test(body)) tags.push('#preference');
+        if (tags.length) {
+          sec = sec.replace(header, header + ' ' + tags.slice(0, 3).join(' '));
+          taggedBlocks++; changed = true;
+        }
+      }
+      // 补质量自评
+      if (!/quality:/.test(sec)) {
+        const body = sec.split('\n').slice(1).join(' ');
+        const issues = [];
+        if (!IMP_DECISION.test(body) && !/结论.*[^无]|决策.*[^无]/.test(body)) issues.push('缺少决策/结论');
+        if (!(/\d+[天元块小时分钟版本年月]/.test(body))) issues.push('缺少关键事实');
+        if (!/待办|todo|下一步/.test(body)) issues.push('缺少待办');
+        const kwCount = (body.match(/关键词[：:]\s*(.+)/) || ['', ''])[1].split(/[,，、]/).filter(w => w.trim()).length;
+        if (kwCount < 2) issues.push('关键词不足');
+        sec += '\n' + (issues.length ? `<!-- quality: ${issues.join(', ')} -->` : '<!-- quality: ✅ 完整 -->') + '\n';
+        qualityAdded++; changed = true;
+      }
+      newSections.push(sec);
+    }
+    if (changed) {
+      fs.writeFileSync(medFile, newSections.join('## '));
+      filesChanged++;
+    }
+  }
+  if (filesChanged) { try { reindex(); } catch {} }
+  return { taggedBlocks, qualityAdded, filesChanged };
 }
 
 function autoConsolidate(opts = {}) {
@@ -939,6 +1036,14 @@ function autoConsolidate(opts = {}) {
   const s = loadState();
   const force = !!opts.force;
   const check = !!opts.check;
+
+  // P0: --retag 跳过节流，直接执行
+  if (opts.retag) {
+    const retagStat = retagAllBlocks();
+    s.lastConsolidateAt = nowIso();
+    saveState(s);
+    return { retag: true, ...retagStat };
+  }
 
   // 节流：默认 30 分钟检查一次
   const interval = CFG.thresholds.consolidateIntervalMs || 1800000;
@@ -958,9 +1063,20 @@ function autoConsolidate(opts = {}) {
 
   if (!needed) {
     if (!check) { s.lastConsolidateAt = nowIso(); saveState(s); }
+    // P0: --retag 批量补旧块标签+质量自评
+    if (opts.retag) {
+      const retagStat = retagAllBlocks();
+      return { retag: true, ...retagStat };
+    }
     return { needed: false, reason: 'below-threshold', newMessages: msgs.length, highImpCount, impSum: Math.round(impSum * 100) / 100 };
   }
   if (check) return { needed: true, newMessages: msgs.length, highImpCount, impSum: Math.round(impSum * 100) / 100 };
+
+  // P0: --retag 在 check 模式也允许
+  if (opts.retag) {
+    const retagStat = retagAllBlocks();
+    return { retag: true, ...retagStat };
+  }
 
   const block = buildAutoSummaryBlock(msgs);
   const medFile = path.join(D.medium, today() + '.md');
@@ -968,6 +1084,8 @@ function autoConsolidate(opts = {}) {
   fs.writeFileSync(medFile, med.trimEnd() + '\n\n' + block.text + '\n');
   try { reindex(); } catch {}
   try { buildContentIndex(); } catch {}
+  // v4: 自动更新用户画像
+  try { cmdProfile({update: true}); } catch {}
 
   s.lastConsolidateTs = block.lastTs;
   s.lastConsolidateAt = nowIso();
@@ -1079,6 +1197,7 @@ function cmdDistillProposals(opts) {
     snapshotMEMORY(true);
     buildContentIndex();
     appendDevLog(`审阅通过: ${p.content.slice(0, 40)}…`);
+    appendGrowthLog(p.content, p.section);
   } finally { releaseLock(); }
 
   dp.updated_at = nowIso();
@@ -1277,12 +1396,24 @@ function cmdConflict() {
       }
     }
   }
+  // ⑧ P3 自动修复：标记冲突条目为 superseded
+  const conflicts = pairs.slice(0, 10);
+  const autoResolve = [];
+  for (const c of conflicts) {
+    // 简单启发式：含否定词的那条标为 superseded
+    const negators = /不再|不再需要|取消|废除|推翻|撤回|过时|废弃|迁移|替换为|取代/;
+    const older = negators.test(c.a) ? c.a : c.b;
+    const newer = older === c.a ? c.b : c.a;
+    if (!content.includes(`[superseded] ${older}`)) {
+      autoResolve.push({ superseded: older.slice(0, 60), suggested: newer.slice(0, 60), action: '标记 superseded 或移入变更记录' });
+    }
+  }
   // 同时检查变更记录表
   const changeLog = content.match(/## 变更记录[\s\S]*/);
-  const conflicts = pairs.slice(0, 10);
   out({
     hasConflicts: conflicts.length > 0,
     conflicts,
+    autoResolve: autoResolve.length ? autoResolve : undefined,
     recommendation: conflicts.length ? '建议 review 后决定保留哪条，旧条目建议移入变更记录' : '未检测到明显冲突',
     changeLog: changeLog ? changeLog[0].split('\n').filter(l => l.trim().startsWith('-')).length + ' 条变更记录' : '无变更记录节',
   });
@@ -1467,7 +1598,9 @@ function searchLayer(query, layer, opts = {}) {
       const lines = txt.split('\n');
       for (let i = 0; i < lines.length; i++) {
         if (match(lines[i]) && lines[i].trim().startsWith('-')) {
-          results.push({ layer, sub: 'long', text: lines[i].trim().slice(0, 200), score: 2, imp: 0.9, file: 'MEMORY.md', line: i + 1 });
+          const t = lines[i].trim().slice(0, 200);
+          results.push({ layer, sub: 'long', text: t, score: 2, imp: 0.9, file: 'MEMORY.md', line: i + 1 });
+          trackMemoryHit(t); // ⑨ 追踪命中时间
           if (results.filter(r => r.layer === 'long').length >= 5) break;
         }
       }
@@ -1641,7 +1774,7 @@ function findDashScopeKey() {
 }
 
 // ============================================================
-// 摘要信号发送
+// 摘要信号发送（v4 逻辑保留）
 // ============================================================
 
 function resolveBin(name) {
@@ -2297,10 +2430,8 @@ function cmdRecord(role, text) {
     }
   }
 
-  // 高重要性 user 消息顺带提取待办
-  if (role === 'user' && (IMP_TODO.test(text))) {
-    try { extractTodos(); } catch { /* 不影响主流程 */ }
-  }
+  // 待办提取已改为仅从 medium 摘要块和手动添加
+  // 不再从实时对话中自动提取（噪音太多）
 
   s.totalMessages++;
   s.lastMessageAt = nowIso();
@@ -2321,6 +2452,32 @@ function cmdRecord(role, text) {
   // v5.2：自动整合检查（节流，满足条件才写中期摘要块）
   let consolidated = null;
   try { consolidated = autoConsolidate(); } catch {}
+
+  // v4.1: Recall 自动触发 — 用户高 imp 消息自动搜索相关历史
+  if (role === 'user' && imp >= 0.4 && text.length > 20) {
+    const query = text.slice(0, 200);
+    multiPathSearch(query, 'hybrid').then(results => {
+      const arr = Array.isArray(results) ? results : (results && results.results) || [];
+      const relevant = arr
+        .filter(r => ['medium', 'long', '中期归档', '长期知识'].includes(r.layer) && (r.imp || 0) >= 0.4)
+        .slice(0, 3);
+      if (relevant.length) {
+        const flashbacks = relevant.map(r => ({
+          text: (r.text || '').slice(0, 200),
+          source: r.file || r.layer,
+          imp: r.imp || 0,
+          relevance: Math.round((r.combinedScore || 0) * 100) / 100,
+        }));
+        try {
+          fs.writeFileSync(
+            path.join(D.shortWorking, 'last-recall.json'),
+            JSON.stringify({ query: query.slice(0, 100), at: nowIso(), found: flashbacks.length, flashbacks }, null, 2)
+          );
+        } catch {}
+      }
+    }).catch(() => {}); // fire-and-forget，不阻塞记录流程
+  }
+
   out({ recorded: true, turns: s.turns, totalMessages: s.totalMessages, imp, consolidated });
 }
 
@@ -2332,7 +2489,7 @@ function cmdStatus() {
   s.nextSignalIn = Math.min(s.nextShortIn, s.nextMediumIn);
   s.root = ROOT;
   s.engineDir = ENGINE_DIR;
-  s.version = 'Mnemosyne v3';
+  s.version = 'Mnemosyne v4';
   // 附加 v5 状态
   const vec = loadVectors();
   s.semanticEnabled = s.semanticEnabled || false;
@@ -2344,7 +2501,7 @@ function cmdStatus() {
   let wm = null;
   try { wm = JSON.parse(fs.readFileSync(WORKING_FILE, 'utf8')); }
   catch { wm = { current_task: '(未初始化)' }; }
-  s.workingMemory = { task: wm.current_task, state: wm.task_state, decisions: (wm.recent_decisions || []).length, questions: (wm.open_questions || []).length };
+  s.workingMemory = { task: wm.current_task, state: wm.task_state, decisions: (wm.recent_decisions || []).slice(0, 5), questions: (wm.open_questions || []).slice(0, 5), updated_at: wm.updated_at };
   s.shortLayers = { 对话记录: fs.existsSync(D.shortRaw) ? fs.readdirSync(D.shortRaw).filter(f => f.endsWith('.jsonl')).length : 0, 工作台: fs.existsSync(WORKING_FILE), 今日摘要: fs.existsSync(D.shortInject) ? fs.readdirSync(D.shortInject).filter(f => f.endsWith('.json')).length : 0 };
   // P1: pending distill proposals
   const dp = loadDistillProposals();
@@ -2434,6 +2591,8 @@ function cmdSync(opts = {}) {
       try { cmdCleanupSilent(); } catch {}
     }
     try { version = snapshotMEMORY(); buildContentIndex(); } catch {}
+    // v4: 自动更新用户画像
+    try { cmdProfile({update: true}); } catch {}
   }
   // 10. 离线保护（quick 跳过——避免大批量 proposals）
   let distillCatchUp = null;
@@ -2487,6 +2646,36 @@ function cmdReindex() {
 const DEVLOG_MARKER = '<!-- devlog:start -->';
 const DEVLOG_END = '<!-- devlog:end -->';
 
+// ⑨ 过期记忆降级 — 追踪 MEMORY.md 条目最后命中时间
+const STALE_FILE = path.join(D.engine, 'stale.json');
+function trackMemoryHit(lineText) {
+  ensureDirs();
+  const key = lineText.slice(0, 40);
+  let stale = {};
+  try { stale = JSON.parse(fs.readFileSync(STALE_FILE, 'utf8')); } catch {}
+  stale[key] = { hit: nowIso(), text: lineText.slice(0, 80) };
+  // 保留最近 500 条
+  const keys = Object.keys(stale).sort((a,b) => (stale[b].hit||'').localeCompare(stale[a].hit||''));
+  if (keys.length > 500) { const trimmed = {}; for (const k of keys.slice(0, 500)) trimmed[k] = stale[k]; stale = trimmed; }
+  fs.writeFileSync(STALE_FILE, JSON.stringify(stale, null, 2));
+}
+function getStaleEntries(daysThreshold = 60) {
+  let stale = {};
+  try { stale = JSON.parse(fs.readFileSync(STALE_FILE, 'utf8')); } catch {}
+  const cutoff = Date.now() - daysThreshold * 86400000;
+  const result = [];
+  for (const [key, v] of Object.entries(stale)) {
+    if (new Date(v.hit).getTime() < cutoff) result.push({ text: v.text, lastHit: v.hit, daysStale: Math.floor((Date.now() - new Date(v.hit).getTime()) / 86400000) });
+  }
+  return result.sort((a,b) => b.daysStale - a.daysStale);
+}
+function cmdStale(opts) {
+  ensureDirs();
+  const days = parseInt(opts.days, 10) || 60;
+  const stale = getStaleEntries(days);
+  out({ staleCount: stale.length, threshold: days + '天', entries: stale });
+}
+
 function appendDevLog(entry) {
   ensureDirs();
   const ts = new Date().toISOString().replace('T',' ').slice(0,19);
@@ -2506,6 +2695,30 @@ function appendDevLog(entry) {
     idx = idx.slice(0, h1End + 1) + devSection + idx.slice(h1End + 1);
   }
   fs.writeFileSync(INDEX_FILE, idx);
+  return line;
+}
+
+// ⑤ 记忆成长日志 — 每次 MEMORY.md 新增条目时自动记录
+function appendGrowthLog(entry, section) {
+  ensureDirs();
+  const GROWTH_FILE = path.join(MEM, 'growth.md');
+  const ts = dayOf(Date.now());
+  const time = new Date().toISOString().replace('T',' ').slice(11,16);
+  const line = `| ${ts} ${time} | **${section || '长期知识'}** | ${entry.slice(0, 100)} |`;
+  
+  let md = '';
+  if (fs.existsSync(GROWTH_FILE)) {
+    md = fs.readFileSync(GROWTH_FILE, 'utf8');
+    if (md.includes(entry.slice(0, 30))) return null; // 去重
+  } else {
+    md = '# 🌱 记忆成长日志\n\n> 每次 MEMORY.md 新增知识点时自动记录，见证记忆系统的成长\n\n| 时间 | 分类 | 内容 |\n|------|------|------|\n';
+  }
+  
+  // 按时间倒序插入
+  const headerEnd = md.indexOf('\n|------');
+  const insertAt = md.indexOf('\n', headerEnd) + 1;
+  md = md.slice(0, insertAt) + line + '\n' + md.slice(insertAt);
+  fs.writeFileSync(GROWTH_FILE, md);
   return line;
 }
 
@@ -2966,10 +3179,437 @@ function cmdTimeline() {
 }
 
 // ============================================================
+// v4.0 — 记忆回响: context / recall / report / profile / ask
+// ============================================================
+
+// ⑳ P3 记忆时间旅行 — 从版本快照恢复 MEMORY.md
+function cmdTimeTravel(opts) {
+  ensureDirs();
+  if (opts.list) {
+    const all = listVersions().slice(0, 20);
+    const entries = all.map(v => {
+      try {
+        const d = require(v.path);
+        return { id: d.id, ts: d.ts, size: d.size, sections: (d.sections || []).length };
+      } catch { return { id: v.id, error: '无法读取' }; }
+    });
+    return out({ total: entries.length, versions: entries });
+  }
+  if (opts.restore) {
+    const vid = opts.restore;
+    const verFile = path.join(D.versions, vid + '.json');
+    if (!fs.existsSync(verFile)) return out({ error: '版本不存在: ' + vid });
+    try {
+      const ver = require(verFile);
+      if (!ver.content) return out({ error: '版本内容为空' });
+      // 保存当前版本作为备份
+      snapshotMEMORY(true);
+      fs.writeFileSync(LONG_FILE, ver.content);
+      buildContentIndex();
+      return out({ restored: true, to: vid, ts: ver.ts, note: 'MEMORY.md 已恢复。当前版本已自动备份。' });
+    } catch (e) {
+      return out({ error: e.message });
+    }
+  }
+  return out({ usage: 'engine.js time-travel --list | --restore <version-id>' });
+}
+
+// ③ ⑬ 会话上下文 — 新会话启动时注入
+function cmdContext() {
+  ensureDirs();
+  const result = { todos: [], questions: [], lastDiscussion: null, decisions: [], resume: null };
+
+  const s = loadState();
+
+  // ⑬ 话题续接：检查用户是否隔了 >12h 未活动
+  if (s.lastMessageAt) {
+    const gapHrs = Math.floor((Date.now() - new Date(s.lastMessageAt).getTime()) / 3600000);
+    if (gapHrs >= 12) {
+      // 找到上次活跃当天的 medium 摘要
+      const lastActiveDay = dayOf(new Date(s.lastMessageAt));
+      const medFile = path.join(D.medium, lastActiveDay + '.md');
+      if (fs.existsSync(medFile)) {
+        const med = fs.readFileSync(medFile, 'utf8');
+        const topics = med.match(/## .+/g) || [];
+        // 收集待确认问题
+        const pendingLine = med.match(/待确认[：:].*/) || [];
+        // 收集决策
+        const decLines = med.split('\n').filter(l => IMP_DECISION.test(l));
+        const lastTopics = topics.slice(-3).map(t => t.replace(/^## \d{2}:\d{2}\s*/, '').trim());
+        result.resume = {
+          gap: gapHrs >= 48 ? Math.round(gapHrs / 24) + '天' : gapHrs + '小时',
+          lastActive: lastActiveDay,
+          topics: lastTopics,
+          summary: lastTopics.length
+            ? `${gapHrs >= 48 ? '好久不见！' : '欢迎回来！'}上次（${lastActiveDay}）聊到 ${lastTopics.join('、')}`
+            : `${gapHrs >= 48 ? '好久不见！' : '欢迎回来！'}上次活动在 ${lastActiveDay}`,
+          pendingQuestions: (med.match(/[?？].+/g) || []).slice(0, 3).map(q => q.replace(/^[-*]\s*/, '').trim().slice(0, 80)),
+        };
+      }
+    }
+  }
+
+  // 1. 未完成待办（>3 天的标 urgent）
+  const todos = loadTodos().filter(t => t.status === 'open');
+  for (const t of todos) {
+    const age = t.createdAt ? Math.floor((Date.now() - new Date(t.createdAt).getTime()) / 86400000) : 0;
+    result.todos.push({ text: t.text, age, urgent: age >= 3 });
+  }
+
+  // 2. 工作记忆中待确认问题
+  try {
+    const wm = JSON.parse(fs.readFileSync(path.join(D.shortWorking, 'current.json'), 'utf8'));
+    result.questions = (wm.open_questions || []).slice(0, 5);
+    result.decisions = (wm.recent_decisions || []).slice(0, 3).map(d => d.text || d);
+    result.lastDiscussion = wm.current_task || null;
+  } catch {}
+
+  // ⑧ P3 重复检测：对比 resume.pendingQuestions 和当前 working 的 open_questions
+  if (result.resume && result.resume.pendingQuestions && result.questions.length) {
+    const repeated = [];
+    for (const pq of result.resume.pendingQuestions) {
+      for (const cq of result.questions) {
+        if (pq.slice(0, 30).replace(/\s/g, '') === cq.slice(0, 30).replace(/\s/g, '')) {
+          repeated.push(pq.slice(0, 60));
+          break;
+        }
+      }
+    }
+    if (repeated.length) {
+      result.resume.repeatedTopics = repeated;
+      result.resume.summary += `，其中有 ${repeated.length} 个话题之前也提到过`;
+    }
+  }
+
+  // 3. 最近一次对话的话题
+  try {
+    if (s.lastConsolidateTs) {
+      const medFile = path.join(D.medium, dayOf(new Date(s.lastConsolidateTs)) + '.md');
+      if (fs.existsSync(medFile)) {
+        const med = fs.readFileSync(medFile, 'utf8');
+        const topics = med.match(/## .+/g);
+        result.recentTopics = (topics || []).slice(-3).map(t => t.replace('## ', ''));
+      }
+    }
+  } catch {}
+
+  result.tip = result.resume
+    ? result.resume.summary
+    : (result.todos.filter(t => t.urgent).length > 0
+      ? `⚠️ 有 ${result.todos.filter(t => t.urgent).length} 个超过 3 天的待办未完成`
+      : (result.questions.length > 0 ? `💡 有 ${result.questions.length} 个待确认问题` : '✅ 所有事项已处理'));
+
+  out(result);
+}
+
+// ① 上下文闪回 — 搜索相关历史
+async function cmdRecall(opts) {
+  ensureDirs();
+  const query = opts.query || '';
+  if (!query) return out({ error: '用法: engine.js recall --query "内容"' });
+
+  // 用 hybrid 模式搜索，只取 high-imp 结果
+  const results = await multiPathSearch(query, 'hybrid');
+  // 过滤：只要 medium 和 long 层的，imp≥0.5
+  const arr = Array.isArray(results) ? results : (results && results.results) || [];
+  const relevant = arr
+    .filter(r => ['medium', 'long', '长期知识', '中期归档'].includes(r.layer) && (r.imp || 0) >= 0.5)
+    .slice(0, 3);
+
+  const flashbacks = relevant.map(r => ({
+    text: (r.text || '').slice(0, 200),
+    source: r.file || r.layer,
+    date: r.ts || '',
+    imp: r.imp || 0,
+    relevance: Math.round((r.combinedScore || 0) * 100) / 100,
+  }));
+
+  out({ query, found: flashbacks.length, flashbacks, tip: flashbacks.length > 0
+    ? `找到 ${flashbacks.length} 条相关历史记忆`
+    : '未找到相关历史记录' });
+}
+
+// ⑥ 每日/每周记忆报告
+function cmdReport(opts) {
+  ensureDirs();
+  const day = opts.date || today();
+  const dateLabel = opts.date ? day : '今天';
+  const weekly = !!opts.weekly;
+
+  if (weekly) {
+    // ㉑ P3 周报：汇总最近 7 天
+    const report = { type: 'weekly', days: 7, dates: [], topTopics: [], totalDecisions: 0, totalTodos: 0, summary: '' };
+    const topicFreq = {}, allTopics = [];
+    for (let i = 0; i < 7; i++) {
+      const d = dayOf(Date.now() - i * 86400000);
+      const medFile = path.join(D.medium, d + '.md');
+      if (!fs.existsSync(medFile)) continue;
+      report.dates.push(d);
+      const med = fs.readFileSync(medFile, 'utf8');
+      const tps = med.match(/## .+/g) || [];
+      tps.forEach(t => {
+        const name = t.replace(/^## \d{2}:\d{2}\s*/, '').trim().replace(/\[#[^\]]+\]/g, '').trim();
+        if (name && name.length > 3) topicFreq[name] = (topicFreq[name] || 0) + 1;
+      });
+      report.totalDecisions += med.split('\n').filter(l => IMP_DECISION.test(l) && l.length > 10).length;
+    }
+    report.topTopics = Object.entries(topicFreq).sort((a,b) => b[1]-a[1]).slice(0, 8).map(([t,c]) => ({ topic: t.slice(0, 60), days: c }));
+    report.totalTodos = loadTodos().filter(t => t.status === 'open').length;
+    report.summary = report.topTopics.length
+      ? `本周 7 天讨论了 ${report.topTopics.length} 个主要话题`
+      : '本周暂无记录';
+    return out(report);
+  }
+
+  const report = { date: dateLabel, topics: [], decisions: [], facts: [], newTodos: [], summary: '' };
+
+  // 1. 读取当日 medium 摘要
+  const medFile = path.join(D.medium, day + '.md');
+  if (fs.existsSync(medFile)) {
+    const med = fs.readFileSync(medFile, 'utf8');
+    const topics = med.match(/## .+/g) || [];
+    report.topics = topics.map(t => t.replace('## ', '').trim());
+    // 提取决策行
+    for (const line of med.split('\n')) {
+      if (IMP_DECISION.test(line) && line.length > 10) report.decisions.push(line.replace(/^[-*]\s*/, '').trim());
+    }
+  }
+
+  // 2. 读取当日 inject
+  const injFile = path.join(D.shortInject, day + '.json');
+  if (fs.existsSync(injFile)) {
+    try {
+      const inj = JSON.parse(fs.readFileSync(injFile, 'utf8'));
+      report.facts = (inj.facts || []).slice(0, 10);
+      report.confidence = inj.confidence || 0;
+    } catch {}
+  }
+
+  // 3. 当日待办
+  const todos = loadTodos();
+  report.newTodos = todos.filter(t => t.createdAt && t.createdAt.startsWith(day)).map(t => t.text);
+
+  // 4. 摘要
+  const parts = [];
+  if (report.topics.length) parts.push(`讨论了 ${report.topics.length} 个话题`);
+  if (report.decisions.length) parts.push(`做了 ${report.decisions.length} 个决定`);
+  if (report.newTodos.length) parts.push(`新增 ${report.newTodos.length} 个待办`);
+  report.summary = parts.length ? parts.join('，') : '暂无记录';
+
+  out(report);
+}
+
+// ⑩ 用户画像 — memory/profile.md 渐进式构建 · 情绪价值
+function cmdProfile(opts) {
+  ensureDirs();
+  opts = opts || {};
+  const PROFILE_FILE = path.join(MEM, 'profile.md');
+  const s = loadState();
+  const totalTurns = s.turns || 0;
+
+  // 画像成熟度：150轮≈70%，之后每50轮+5%，上限95%
+  const maturity = Math.min(95, totalTurns < 150 ? Math.round(totalTurns / 150 * 70) : 70 + Math.round((totalTurns - 150) / 50 * 5));
+
+  // 如果已有 profile.md 且未强制更新，直接返回
+  if (fs.existsSync(PROFILE_FILE) && !opts.update) {
+    const existing = fs.readFileSync(PROFILE_FILE, 'utf8');
+    return out({ profile: PROFILE_FILE, updated: false, maturity, turns: totalTurns });
+  }
+
+  // 构建用户画像
+  const profile = { tech: [], style: '', pace: '', focus: [], preferences: [], personality: [] };
+
+  // 从 MEMORY.md 提取
+  try {
+    const mem = fs.readFileSync(LONG_FILE, 'utf8');
+    const extract = (section) => {
+      const m = mem.match(new RegExp('## ' + section + '\\n([\\s\\S]*?)(?=\\n## |$)'));
+      return m ? m[1].split('\n').filter(l => l.startsWith('- ')).map(l => l.replace(/^-\s*/, '')) : [];
+    };
+    profile.preferences = extract('用户偏好');
+    const facts = extract('关键事实');
+    profile.focus = extract('当前项目');
+    for (const f of facts) {
+      if (/node|python|rust|go|java|js|ts|react|vue|docker|k8s|nginx|sql/i.test(f)) profile.tech.push(f);
+    }
+    const allText = mem.toLowerCase();
+    if (allText.includes('简洁')||allText.includes('直接')) profile.style = '简洁直接，不喜啰嗦';
+    else if (allText.includes('详细')||allText.includes('解释')) profile.style = '偏好详细说明，喜欢理解原理';
+    if (allText.includes('快速')||allText.includes('拍板')) profile.pace = '快速决策型，不纠结';
+    else if (allText.includes('谨慎')||allText.includes('慢慢')) profile.pace = '深思熟虑型，考虑周全';
+  } catch {}
+
+  // 从工作记忆补充
+  try {
+    const wm = JSON.parse(fs.readFileSync(path.join(D.shortWorking, 'current.json'), 'utf8'));
+    if (wm.current_task && !profile.focus.includes(wm.current_task)) profile.focus.push(wm.current_task);
+  } catch {}
+
+  // 去重限制
+  profile.tech = [...new Set(profile.tech)].slice(0, 8);
+  profile.focus = [...new Set(profile.focus)].slice(0, 5);
+  profile.preferences = [...new Set(profile.preferences)].slice(0, 10);
+  if (!profile.style) profile.style = '正在了解你…';
+  if (!profile.pace) profile.pace = '正在观察中…';
+
+  // 情绪价值：人格化描述
+  const personalityTraits = [];
+  const allLower = profile.preferences.join(' ').toLowerCase() + ' ' + profile.tech.join(' ').toLowerCase();
+  if (allLower.includes('零依赖')||allLower.includes('轻量')||allLower.includes('简单')) personalityTraits.push('追求优雅的简洁');
+  if (allLower.includes('安全')||allLower.includes('加密')||allLower.includes('隐私')) personalityTraits.push('对安全和隐私有执着');
+  if (allLower.includes('快速')||allLower.includes('效率')) personalityTraits.push('珍惜时间，讨厌冗余');
+  if (allLower.includes('开源')||allLower.includes('社区')) personalityTraits.push('相信开源的力量');
+  if (totalTurns > 100) personalityTraits.push('是 Mnemosyne 的深度用户 ✨');
+  if (totalTurns > 50) personalityTraits.push('喜欢亲手打磨工具');
+  if (maturity >= 50) personalityTraits.push('有清晰的审美偏好');
+  profile.personality = personalityTraits.slice(0, 5);
+
+  // 检测用户名
+  let userName = '';
+  try {
+    const userFile = path.join(ROOT, 'USER.md');
+    if (fs.existsSync(userFile)) {
+      const um = fs.readFileSync(userFile, 'utf8');
+      const nm = um.match(/\*\*Name:\*\*\s*(.+)/);
+      if (nm) userName = nm[1].trim();
+    }
+  } catch {}
+  if (!userName) {
+    try {
+      const mem = fs.readFileSync(LONG_FILE, 'utf8');
+      const nm = mem.match(/Elon|elon/);
+      if (nm) userName = 'Elon';
+    } catch {}
+  }
+
+  // 写入 profile.md
+  const now = dayOf(Date.now());
+  let md = '# 👤 用户画像\n\n';
+  if (userName) {
+    md += `> ✨ **${userName}**`;
+    if (userName === 'Elon') md += ` — 🦞 Mnemosyne 的缔造者`;
+    md += `\n`;
+  }
+  md += `> 🧬 画像完整度: **${maturity}%** · ${totalTurns} 轮对话 · ${now}\n`;
+  if (maturity < 30) md += `> 🌱 我才刚开始了解你，每多聊一天，我就多懂你一点\n`;
+  else if (maturity < 60) md += `> 🌿 我已经开始理解你的风格了，但还有更多值得探索\n`;
+  else if (maturity < 85) md += `> 🌳 我们越来越默契了，我知道你喜欢什么、讨厌什么\n`;
+  else md += `> 🏛️ 我非常了解你了——你的偏好、节奏、品味，都刻在这里\n`;
+  md += '\n';
+
+  md += '## 💻 技术偏好\n';
+  if (profile.tech.length) { for (const t of profile.tech) md += `- ${t}\n`; }
+  else md += '- 还在发现中… 每次聊技术话题，我就更懂你一点 🌱\n';
+  md += '\n';
+
+  md += '## 💬 沟通风格\n';
+  md += `- **风格**: ${profile.style}\n`;
+  md += `- **决策**: ${profile.pace}\n`;
+  md += '\n';
+
+  md += '## 🎯 当前关注\n';
+  if (profile.focus.length) { for (const f of profile.focus) md += `- ${f}\n`; }
+  else md += '- 让我们多聊聊天，我会慢慢发现的 ✨\n';
+  md += '\n';
+
+  md += '## 🌟 个性碎片\n';
+  if (profile.personality.length) { for (const p of profile.personality) md += `- ${p}\n`; }
+  else md += '- 像拼图一样，每聊一次就多一块… 🧩\n';
+  md += '\n';
+
+  md += '## 📝 偏好清单\n';
+  if (profile.preferences.length) { for (const p of profile.preferences) md += `- ${p}\n`; }
+  else md += '- 当你说"我喜欢这样"的时候，我就记下来了 💭\n';
+  md += '\n';
+
+  md += `---\n*🦞 每次 sync 或 consolidate 后自动刷新 · 成熟度 ${maturity}%*\n`;
+  md += `\n<!-- 用户可手动编辑此文件修正画像 — 编辑后不会被自动刷新覆盖（下次 --update 才会重建） -->\n`;
+
+  fs.writeFileSync(PROFILE_FILE, md);
+  out({ profile: 'memory/profile.md', updated: true, maturity, turns: totalTurns,
+    summary: { style: profile.style, pace: profile.pace, techCount: profile.tech.length, personalityCount: profile.personality.length }
+  });
+}
+
+// ⑲ 记忆问答 — 结构化查询
+function cmdAsk(opts) {
+  ensureDirs();
+  const q = (opts.query || '').toLowerCase();
+  const maxDays = parseInt(opts.days, 10) || 14; // 默认14天，支持 --days N
+
+  // 扫描 medium 文件（支持按天限定 + fallback 全量）
+  const allMedium = fs.readdirSync(D.medium).filter(f => f.endsWith('.md')).sort();
+  const scanFiles = (days) => {
+    if (days <= 0 || days >= allMedium.length) return allMedium;
+    return allMedium.slice(-days);
+  };
+
+  // 决策查询
+  if (q.includes('决定') || q.includes('决策') || q.includes('选了什么')) {
+    let decisions = []; let scannedDays = maxDays;
+    for (const f of scanFiles(maxDays)) {
+      const med = fs.readFileSync(path.join(D.medium, f), 'utf8');
+      for (const line of med.split('\n')) {
+        if (IMP_DECISION.test(line) && line.length > 10) {
+          decisions.push({ date: f.replace('.md', ''), text: line.replace(/^[-*]\s*/, '').trim() });
+        }
+      }
+    }
+    // Fallback: 如果限定天数无结果，自动扩展到全量
+    if (!decisions.length && maxDays > 0 && scanFiles(maxDays).length < allMedium.length) {
+      decisions = []; scannedDays = -1;
+      for (const f of allMedium) {
+        const med = fs.readFileSync(path.join(D.medium, f), 'utf8');
+        for (const line of med.split('\n')) {
+          if (IMP_DECISION.test(line) && line.length > 10) {
+            decisions.push({ date: f.replace('.md', ''), text: line.replace(/^[-*]\s*/, '').trim() });
+          }
+        }
+      }
+    }
+    return out({ type: 'decisions', count: decisions.length, scannedDays: scannedDays > 0 ? scannedDays : 'full', decisions: decisions.slice(-10) });
+  }
+
+  // 待办查询
+  if (q.includes('待办') || q.includes('还没做') || q.includes('todo')) {
+    const todos = loadTodos().filter(t => t.status === 'open');
+    return out({ type: 'todos', count: todos.length, todos: todos.map(t => ({ id: t.id, text: t.text, age: t.createdAt ? Math.floor((Date.now() - new Date(t.createdAt).getTime()) / 86400000) : 0 })) });
+  }
+
+  // 偏好查询
+  if (q.includes('偏好') || q.includes('喜欢') || q.includes('习惯')) {
+    return cmdProfile();
+  }
+
+  // 话题查询
+  if (q.includes('话题') || q.includes('聊了') || q.includes('讨论')) {
+    const topics = [];
+    for (const f of scanFiles(maxDays)) {
+      const med = fs.readFileSync(path.join(D.medium, f), 'utf8');
+      const ts = med.match(/## .+/g) || [];
+      topics.push({ date: f.replace('.md', ''), topics: ts.map(t => t.replace('## ', '').trim()) });
+    }
+    return out({ type: 'topics', days: topics.length, scannedDays: maxDays, topics });
+  }
+
+  // 默认：最近动态
+  const s = loadState();
+  const todos = loadTodos().filter(t => t.status === 'open');
+  out({
+    type: 'summary',
+    turns: s.turns,
+    messages: s.totalMessages,
+    openTodos: todos.length,
+    lastActive: s.lastMessageAt,
+    tip: '试试: ask --query "决定" [--days 30] | "待办" | "偏好" | "话题"',
+  });
+}
+
+// ============================================================
 // CLI 入口
 // ============================================================
 
-const HELP = `Mnemosyne v3 — OpenClaw 分层记忆引擎
+const HELP = `Mnemosyne v4 — OpenClaw 分层记忆引擎
 
 Mnemosyne（谟涅摩绪涅）：希腊记忆女神，缪斯之母
 中期+长期: 状态字段 active|candidate|disputed|superseded|archived
@@ -2977,7 +3617,7 @@ memory.md: nightly distill → proposals 文件 → agent 审阅确认后写入�
 
 用法: engine.js <command> [options]
 
-基础命令:
+基础命令（v4 保留）:
   record    --role <user|assistant> --text "内容"   记录消息
   status                                            引擎状态（含索引/TODO/归档统计）
   enable / disable                                  启用/暂停自动记录
@@ -3026,7 +3666,17 @@ v5 新增 — 会话 & 权限:
   search --mode semantic  → 语义向量搜索（需先 embed）
   search --mode hybrid    → 关键词 + 语义融合排序
   search --mode recent    → 偏重短期记忆权重
-  search --mode history   → 偏重长期记忆 & MEMORY.md 权重`;
+  search --mode history   → 偏重长期记忆 & MEMORY.md 权重
+
+v4 记忆回响:
+  context                        会话上下文（待办+问题+最近话题+话题续接）
+  recall   --query "内容"        上下文闪回：搜索相关历史记忆（top 3）
+  report   [--date YYYY-MM-DD] [--weekly] 每日/指定日期报告（--weekly 周报）
+  profile                        用户画像（偏好/事实/项目）
+  ask      --query "决定|待办|偏好|话题" [--days N]  记忆问答（默认14天，支持--days 90）
+  time-travel  --list | --restore <id>  记忆时间旅行（查看/恢复历史版本）
+  stale    [--days 60]           过期记忆检测（默认60天未命中）
+`;
 
 function main() {
   const [cmd, ...rest] = process.argv.slice(2);
@@ -3049,10 +3699,18 @@ function main() {
     case 'init':     cmdInit(); break;
     case 'sync':     cmdSync(opts); break;
     case 'reindex':  cmdReindex(); break;
-    case 'consolidate': out(autoConsolidate({ force: has('force'), check: has('check') })); break;
+    case 'consolidate': out(autoConsolidate({ force: has('force'), check: has('check'), retag: has('retag') })); break;
     case 'search':   cmdSearch(opts.query, opts).catch(e => { console.error(e.message); process.exit(1); }); break;
     case 'stats':    cmdStats(); break;
     case 'health':   cmdHealth(); break;
+    case 'context':  cmdContext(); break;
+    case 'recall':   cmdRecall(opts).catch(e => { console.error(e.message); process.exit(1); }); break;
+    case 'report':   cmdReport(opts); break;
+    case 'profile':  cmdProfile(opts); break;
+    case 'ask':      cmdAsk(opts); break;
+    case 'time-travel': cmdTimeTravel(opts); break;
+    case 'stale':    cmdStale(opts); break;
+    case 'conflict': cmdConflict(); break;
     case 'save':     cmdSave(opts.file, opts.text); break;
     case 'export':   cmdExport(); break;
     case 'timeline': cmdTimeline(); break;

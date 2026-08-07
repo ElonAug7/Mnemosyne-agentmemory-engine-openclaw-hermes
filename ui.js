@@ -18,9 +18,10 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { execFile } = require('child_process');
+const { execFile, execFileSync } = require('child_process');
 
 const ROOT = process.env.OPENCLAW_WORKSPACE || path.join(require('os').homedir(), '.openclaw', 'workspace');
+const ENGINE = path.join(ROOT, 'tools', 'memory-engine', 'engine.js');
 const PORT = parseInt(process.env.MEMORY_UI_PORT || '8765', 10);
 const HOST = '127.0.0.1';   // 只监听本机，安全
 const TRASH_DIR = path.join(ROOT, 'memory', '.trash');
@@ -360,6 +361,38 @@ const server = http.createServer(async (req, res) => {
       return json({ suggestions, total: suggestions.length, freedEstimate: suggestions.reduce((s, i) => s + (i.size || 0), 0) });
     }
 
+    // ═══════ P2+P3 GET APIs ═══════
+    if (url.pathname === '/api/stats') {
+      try {
+        const stdout = execFileSync(process.execPath, [ENGINE, 'stats'], { encoding: 'utf8', timeout: 5000, cwd: ROOT });
+        return json(JSON.parse(stdout));
+      } catch (e) { return json({ error: e.message, daily: {} }); }
+    }
+    if (url.pathname === '/api/versions') {
+      const verDir = path.join(ROOT, 'memory', 'versions');
+      const vers = [];
+      if (fs.existsSync(verDir)) {
+        for (const f of fs.readdirSync(verDir).sort().reverse().slice(0, 20)) {
+          if (!f.endsWith('.json')) continue;
+          try {
+            const d = JSON.parse(fs.readFileSync(path.join(verDir, f), 'utf8'));
+            vers.push({ id: d.id, ts: d.ts, size: d.size, sections: (d.sections || []).length });
+          } catch {}
+        }
+      }
+      return json({ versions: vers });
+    }
+    if (url.pathname === '/api/version') {
+      const id = url.searchParams.get('id') || '';
+      if (!id) return json({ error: '需要 id 参数' });
+      const verFile = path.join(ROOT, 'memory', 'versions', id + '.json');
+      if (!fs.existsSync(verFile)) return json({ error: '版本不存在' });
+      try {
+        const d = JSON.parse(fs.readFileSync(verFile, 'utf8'));
+        return json({ id: d.id, ts: d.ts, content: d.content || '' });
+      } catch (e) { return json({ error: e.message }); }
+    }
+
     // ═══════ POST（写操作 — CSRF 保护）═══════
     if (url.pathname === '/api/enable') {
       return handlePost(req, res, async () => {
@@ -373,13 +406,13 @@ const server = http.createServer(async (req, res) => {
         json({ enabled: false });
       });
     }
-    if (url.pathname === '/api/record-raw-on') {
+    if (url.pathname === '/api/record-raw-on' || url.pathname === '/api/enable-raw') {
       return handlePost(req, res, async () => {
         await runEngine(['record-raw', '--enable']);
         json({ recordRaw: true });
       });
     }
-    if (url.pathname === '/api/record-raw-off') {
+    if (url.pathname === '/api/record-raw-off' || url.pathname === '/api/disable-raw') {
       return handlePost(req, res, async () => {
         await runEngine(['record-raw', '--disable']);
         json({ recordRaw: false });

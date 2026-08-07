@@ -1,85 +1,54 @@
-# MEMORY-PROTOCOL.md — 分层记忆协议 v1
+# 分层记忆协议 (Mnemosyne v4)
 
-## 架构定位
+## 短期 memory/short/ — hook 自动记录
+- `short/raw/` — 原始消息流（JSONL，含 imp 评分），30 天后自动 gzip 归档
+- `short/working/` — 工作台：当前任务、待确认问题、最近决策（高 imp 消息自动刷新）
+- `short/inject/` — 今日结构化摘要：话题/事实/决策（每日自动生成）
 
-Mnemosyne 是智能中枢，位于 MEMORY.md 之上，管理所有记忆资源（对话日志、短期/中期/长期记忆），提供统一检索与调用接口。
-MEMORY.md 是结构化知识库，存储经提炼的、权威的、结构化的知识。
+## 中期 memory/medium/ — 按日摘要块
+- 引擎 `autoConsolidate()` 自动整合：每 30 分钟检查，满足条件时自动写入
+- 触发条件（三选一）：新消息 ≥8 条 OR 高 imp 消息 ≥2 条 OR imp 累积值 ≥3.0
+- 自动同步索引 `memory/index/index.md`
 
-## 层级结构
+## 长期 MEMORY.md — 全局知识
+- 每晚 22:30 cron 自动运行 `nightly-distill`
+- 生成 ≤10 条候选建议 → agent 人工审阅确认后写入（安全加固）
+- 每次写入自动生成版本快照到 `memory/versions/`
+- 新条目自动追加到 `memory/growth.md`（成长日志）
 
+## 👤 用户画像 memory/profile.md
+- `sync`/`consolidate` 后自动更新
+- 含技术偏好、沟通风格、决策节奏、个性碎片
+- 成熟度：150 轮≈70%，之后每 50 轮+5%，上限 95%
+- UI 可手动编辑修正
+
+## 索引 memory/index/ — 思考时最先查
+
+## 🧠 v4 记忆回响
+
+| 命令 | 触发时机 | 说明 |
+|------|---------|------|
+| `context` | 会话启动 | 话题续接(>12h自动)+待办+问题+决策 |
+| `recall` | 回复前/hook自动 | hybrid搜索top3历史记忆 |
+| `report` | 手动/cron | 每日统计+话题+决策汇总 |
+| `profile` | sync自动/手动 | 用户画像(技术/风格/情绪) |
+| `ask` | 手动 | 结构化查询"决定/待办/偏好/话题" |
+
+## 🌱 记忆成长日志 memory/growth.md
+- 每次 MEMORY.md 新增条目自动记录
+- Web UI 可查看
+
+## 语义搜索
+- `search --mode hybrid` — 关键词+语义融合（推荐）
+- `search --mode keyword|semantic|recent|history`
+- 7 路并行召回，5 种权重策略
+
+## imp 评分
 ```
-memory/
-├── index/          ← ① 索引层
-│   ├── index.md              # 中期摘要块关键词索引
-│   └── content-index.json    # MEMORY.md 结构化索引（关键词/实体/时间）
-├── short/          ← ② 短期层
-│   ├── conversations/YYYY-MM-DD.jsonl  # 原始对话流（带重要性评分 imp）
-│   └── archive/YYYY-MM.jsonl.gz        # 30天后 gzip 归档（搜索仍穿透）
-├── medium/         ← ③ 中期层
-│   ├── YYYY-MM-DD.md          # 摘要块
-│   └── archive/YYY-MM-DD.md.gz # 180天后归档
-├── long/           ← ④ 长期层
-│   └── MEMORY.md → ../../MEMORY.md  # 符号链接
-├── engine/         ← 引擎状态
-│   ├── state.json
-│   ├── transcript-offsets.json
-│   ├── embeddings.json        # 语义向量索引
-│   ├── todos.json / permissions.json
-│   └── hook-debug.log
-├── versions/       ← MEMORY.md 版本快照
-│   └── YYYY-MM-DDTHH-MM-SS.json
-└── todos.md        ← 待办清单（自动渲染）
+基准: user=0.35, assistant=0.30
+加成: IMP_TECH +0.12 | IMP_DECISION +0.30 | IMP_TODO +0.25 | IMP_FACT +0.10
+封顶: 1.0 | 闲聊: 0.1
 ```
 
-### ① 索引层
-
-- `index.md`：每个中期摘要块同步 1 行。引擎自动维护。
-- `content-index.json`：MEMORY.md 的节级索引，包含关键词、实体（URL/日期/版本号）、条目数。`sync`/`save` 时自动更新。
-
-### ② 短期层
-
-- 每条消息带 `imp` 字段（0.0–1.0），搜索/统计按重要性加权
-- 30 天后按月份合并 gzip 归档到 `archive/`，搜索仍可穿透压缩文件
-
-### ③ 中期层
-
-- 触发：每 20 轮（引擎自动发信号）或话题结束时
-- 180 天后 gzip 归档
-
-### ④ 长期层
-
-- `MEMORY.md`：用户偏好、关键事实、当前项目、重要事件 + 变更记录
-- 每次 `save`/`sync`/`backup` 自动版本快照（保留最近 50 个）
-- 冲突检测：`engine.js conflict` 扫描矛盾条目
-
-## 摘要信号
-
-| 信号 | 周期 | 动作 |
-|------|------|------|
-| 短期摘要 | 每 5 轮 | 刷新 MEMORY.md，待办提取 |
-| 中期摘要 | 每 20 轮 | 详细摘要块 → medium/，索引自动补全，待办提取，版本快照 |
-
-## 检索策略
-
-| 场景 | 命令 |
-|------|------|
-| 普通聊天 | 读 MEMORY.md + index.md + todos.md |
-| 关键词查询 | `search --query "..."` |
-| 语义查询 | `search --query "..." --mode semantic`（需先 `embed`） |
-| 混合查询 | `search --query "..." --mode hybrid` |
-| 近期焦点 | `search --query "..." --mode recent`（偏重短期权重） |
-| 历史知识 | `search --query "..." --mode history`（偏重长期权重） |
-
-## 版本与冲突
-
-- `engine.js version --force`：创建 MEMORY.md 版本快照
-- `engine.js version-history`：查看最近版本
-- `engine.js version-diff`：对比版本差异
-- `engine.js conflict`：检测可能的矛盾条目
-- 冲突解决原则：以 MEMORY.md 最新版本为准，旧条目移入「变更记录」节
-
-## 权限
-
-- `engine.js permission`：查看权限配置
-- `engine.js permission --agent <id> --level read|write|admin`：按 agent 设置
-- 默认级别：`read`（只读），write 才允许写入
+## 配置
+`memory/engine/config.json` — 保留期/阈值/权重/语义索引开关/raw记录开关

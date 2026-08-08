@@ -335,9 +335,11 @@ function importanceOf(role, text) {
   }
 
   // Fix 7 (v4.5): 承诺/保证语义 — "下次一定""以后肯定""保证"类语句直接推高
+  // v4.5-Pro precision: require actionable commitment, not just casual mention
+  if (/(下次一定|下次会|下次要|后面肯定|以后肯定|之后一定|我保证|我承诺|我答应|发誓|一定做到|绝对会|不会再忘|永远不会忘|永远记住|记住了|记住这个|别忘了|记着|以后每次都|从今往后|我后面|后面会|以后会|之后会)/i.test(t)) {
   // v4.5-Pro precision: only boost if commitment is actionable, not just "I'll try" or "maybe later"
   // Casual qualifiers reduce commitment weight
-  const hasQualifier = /(可能|maybe|试试|try|尽量|hopefully)/i.test(t);
+  const hasQualifier = /(可能|maybe|试试|try|尽量|hopefully|hopefully)/i.test(t);
   if (/(下次一定|下次会|下次要|后面肯定|以后肯定|之后一定|我保证|我承诺|我答应|发誓|一定做到|绝对会|不会再忘|永远不会忘|永远记住|记住了|记住这个|别忘了|记着|以后每次都|从今往后|我后面|后面会|以后会|之后会)/i.test(t)) {
     const boost = hasQualifier ? 0.15 : 0.35; // Casual qualifiers = weak commitment
     score += boost;
@@ -2400,8 +2402,8 @@ function highlight(text, terms) {
   for (const t of terms) {
     if (!t) continue;
     try {
-      s = s.split(new RegExp(`(${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi')).join('**$1**');
-    } catch {}
+      s = s.split(new RegExp(`(${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi')).join('⟪$1⟫');
+    } catch { /* 忽略 */ }
   }
   return s;
 }
@@ -2517,19 +2519,7 @@ async function cmdSearch(query, opts) {
 
   const indexInfo = { mode: vec.mode, items: vec.items.length, remoteFailed: vec.remoteFailed || false };
 
-  // v4.5-Pro: module hooks for search
-  if (refusalMod && result.results?.length > 0) {
-    const r = refusalMod.shouldRefuse(result.results, { query });
-    if (r.refuse) result.refusal = r;
-  }
-  if (timeMod && result.results?.length > 0) {
-    result.results = result.results.map(s => {
-      const halfLife = timeMod.getHalfLife(s.text || '');
-      return timeMod.markStale(s, halfLife);
-    });
-  }
-
-  out({ query, mode: effectiveMode, fallback: effectiveMode !== mode ? '语义未开启→降级keyword' : null, total: result.total, layers: result.layers, weights: result.weights, results: result.results, indexInfo, refusal: result.refusal });
+  out({ query, mode: effectiveMode, fallback: effectiveMode !== mode ? '语义未开启→降级keyword' : null, total: result.total, layers: result.layers, weights: result.weights, results: result.results, indexInfo });
 }
 
 // P1: 搜索结果语义去重 — 相同文件且文本相似度 >80% 的只保留 imp 最高的
@@ -2755,20 +2745,22 @@ async function cmdQA(opts = {}) {
     if (fs.existsSync(pf)) profile = fs.readFileSync(pf, 'utf8').slice(0, 2000);
   } catch {}
 
-  // 3. Search: hybrid 双路召回（keyword + semantic）
+  // 3. Search: keyword + 长期记忆（双路召回）
   const sources = [];
   const seen = new Set();
   
-  // Hybrid semantic search (not keyword-only)
+  // 关键词搜索
   try {
-    const searchResult = await multiPathSearch(query, { mode: 'hybrid' });
-    const results = searchResult?.results || [];
-    for (const r of results.slice(0, 15)) {
-      const txt = (r.text || '').replace(/<[^>]+>/g, '').replace(/⟪\$1⟫/g, '').trim();
-      const key = txt.slice(0, 60);
-      if (!seen.has(key) && txt.length > 10) {
-        seen.add(key);
-        sources.push({ text: txt, file: r.file || r.layer || 'memory', score: r.combinedScore || r.score || 1, layer: r.layer });
+    const kwTerms = tokenizeChinese(query);
+    const kwResults = keywordSearch(query);
+    for (const r of (kwResults || []).slice(0, 8)) {
+      for (const hit of (r.hits || []).slice(0, 2)) {
+        const txt = (hit.text || '').replace(/<[^>]+>/g, '').trim();
+        const key = txt.slice(0, 60);
+        if (!seen.has(key) && txt.length > 10) {
+          seen.add(key);
+          sources.push({ text: txt, file: r.file, score: r.score || 1 });
+        }
       }
     }
   } catch {}

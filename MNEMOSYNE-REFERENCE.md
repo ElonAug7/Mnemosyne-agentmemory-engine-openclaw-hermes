@@ -1,248 +1,345 @@
-# 🦞 Mnemosyne v4.5 (bilingual) Technical Reference
+# 🦞 Mnemosyne v4.5-Pro — Complete Technical Reference
 
-> 3,250 lines · 20 commands · Zero-NN · Zero deps · Zero models · bash install.sh
+> 3,291 lines · 20 commands · Zero-NN · Zero deps · Zero models · 5 pluggable modules · bash install.sh
 
 ---
 
 ## 0. One-Line Definition
 
-Mnemosyne is a **purely local, zero-neural-network cognitive memory engine**.Without any LLM API, embedding model, or vector database，it uses TF-IDF keyword matching + 9-dim regex importance scoring + 4-layer memory architecture to deliver automatic message recording, intelligent scoring, auto-summarization, topic continuation, and long-term memory distillation.
+Mnemosyne v4.5-Pro is a **purely local, zero-neural-network cognitive memory engine** with 5 pluggable modules (time-aware decay, refusal front-loading, query rewrite, multi-hop reasoning, cross-language alignment). No LLM API, no embedding model, no vector database.
 
 ---
 
 ## 1. What It Can Do
 
-### ✅ Core Capabilities
+### Core Capabilities
 
-| Capability | Implementation | User-Visible Effect | — |------|---------|------------| — | auto message recording | Gateway Hook → record | every user/assistant message auto-saved | — | auto importance scoring | 9-dim regex scoring (0.02–1.00) | key decisions auto-boosted, chatter auto-demoted | — | 4-layer memory | raw → working → medium → long | auto-distillation from raw chat to long-term knowledge | — | auto-summary consolidation | consolidate
- ↓
-record → sanitize → compress → [P2: tokenizeChinese] → [P1: batch counter]
- ↓ ↓
-imp JSONL real-time write
- ↓ ↓
-batch flush → syncTranscripts
- ↓ → reindex
-recall auto-trigger → autoConsolidate 
- ↓
-working 
- ↓
-consolidate → + → medium 
- ↓
-nightly distill (22:30) → proposals → agent → MEMORY.md
+| Capability | Implementation | Effect |
+|------|---------|------------|
+| Auto message recording | Gateway Hook -> record | Every user/assistant message auto-saved |
+| Auto importance scoring | 9-dim regex (0.02-1.00) | Key decisions boosted, chatter demoted |
+| 4-layer memory | raw -> working -> medium -> long | Auto-distillation from chat to long-term knowledge |
+| Auto-summarization | consolidate (3-condition trigger) | Every 30min, conversations -> structured summaries |
+| Topic continuation | context (>12h + semantic overlap + dialogue mode) | "Last time we discussed X, welcome back" |
+| Memory echo | recall (high-imp auto-search) | Auto-links to past topics |
+| Long-term distillation | 22:30 cron -> proposals -> agent review | MEMORY.md auto-maintained |
+| Multi-mode search | keyword/semantic/hybrid/recent/history | Exact, fuzzy, recent-biased, history-biased |
+| Semantic dedup | dedupeResults() | No duplicate search results |
+| Memory QA | qa command (context + profile + search + MEMORY.md) | Natural language -> structured sources |
+| Bilingual tokenizer | tokenize() (2-gram + word extraction) | Chinese + English search |
+| Write batching | batch 10 msgs or 30s -> sync/reindex | JSONL real-time, heavy ops batched |
+| Time-aware decay | time.js module | Per-type half-life (7-90 days), relative anchors, conflict resolution |
+| Refusal detection | refusal.js module | Score distribution check, 3-tier confidence, keyword coincidence filter |
+| Query rewrite | rewrite.js module | Session context + post-retrieval expansion + safety valve |
+| Multi-hop reasoning | multihop.js module | Decomposition + per-hop verification + evidence chains |
+| Cross-language | crosslang.js module | 100+ bilingual entity map + auto-expansion |
+
+### Auxiliary
+
+| Capability | Description |
+|------|------|
+| Todo management | Extract from conversations, Web UI |
+| User profile | Auto-maintain tech stack/preferences/style |
+| Daily/weekly reports | Statistical summaries |
+| Recycle bin | 15-day retention, restore/purge |
+| Web Console | http://127.0.0.1:8765 file browser/search/management |
+| Auto-archiving | >30d raw -> gzip, >180d medium -> gzip |
+| Sensitive info redaction | API key/password/private key auto-filter |
+| Git-friendly | All memories in plain Markdown/JSONL, diff/version-control |
+
+---
+
+## 2. Architecture
+
+```
+User Message
+  |
+Gateway Hook (memory-recorder)
+  |
+record -> sanitize -> compress -> tokenize() -> batch counter
+  |                          |
+imp scoring (9-dim regex)   JSONL real-time write
+  |                          |
+batch flush (10msgs/30s)    -> syncTranscripts
+  |                          -> reindex
+recall auto-trigger          -> autoConsolidate (30min throttle)
+  |
+working memory refresh
+  |
+consolidate -> topic tags + quality self-assessment -> medium summary blocks
+  |
+nightly distill (22:30) -> proposals -> agent review -> MEMORY.md
 ```
 
-### 2.2 Four-Layer Memory
+### v4.5-Pro Module Pipeline
 
-| Layer | Path | Format | Retention | Purpose | — |---|------|---------|:---:|------| — | Short-term · Chat Logs | `memory/short/raw/YYYY-MM-DD.jsonl` | JSONL (ts, role, text, imp) | 30→gzip | raw message stream | — | Short-term · Workbench | `memory/short/working/current.json` | JSON (task, decisions, questions, facts) | real-time | current context | — | Short-term · Injectable | `memory/short/inject/YYYY-MM-DD.json` | JSON (summary, topics, facts, decisions) | 7 | injected at agent startup | — | Medium-term · Summary | `memory/medium/YYYY-MM-DD.md` | Markdown (### timestamp + topic tags + quality self-assessment) | 180→gzip | daily archive | — | Long-term · Global Knowledge | `MEMORY.md` | Markdown | — | agent long context | — | Index | `memory/index/index.md` | Markdown (one topic per line + keywords) | — | search acceleration | — | User Profile | `memory/profile.md` | Markdown | — | personalization | — | Growth Log | `memory/growth.md` | Markdown (long-term memory incremental log) | — | memory evolution tracking |
+```
+cmdQA(query)
+  |
+  +-> crosslang.js: bilingual entity expansion
+  +-> multihop.js: sub-question decomposition
+  +-> rewrite.js: session-context rewrite
+  |
+  +-> search (keyword + MEMORY.md full-text)
+  |
+  +-> refusal.js: score distribution check -> refuse if unreliable
+  +-> time.js: per-result staleness marking
+  |
+  -> structured answer with sources + confidence + refusal info
+```
 
-### 2.3 imp Scoring: 9-Dimensional Regex
+### Four-Layer Memory
 
-**This is Mnemosyne's core differentiator.** No neural networks pure regex importance scoring.
+| Layer | Path | Format | Retention | Purpose |
+|---|------|---------|:---:|------|
+| Short: Chat Logs | `memory/short/raw/YYYY-MM-DD.jsonl` | JSONL (ts, role, text, imp) | 30d -> gzip | Raw message stream |
+| Short: Workbench | `memory/short/working/current.json` | JSON (task, decisions, questions, facts) | real-time | Current context |
+| Short: Injectable | `memory/short/inject/YYYY-MM-DD.json` | JSON (summary, topics, facts, decisions) | 7d | Agent startup injection |
+| Medium: Summary | `memory/medium/YYYY-MM-DD.md` | Markdown (timestamp + topic tags + quality) | 180d -> gzip | Daily archive |
+| Long: Global Knowledge | `MEMORY.md` | Markdown (prefs/facts/projects/events) | permanent | Agent long context |
+| Index | `memory/index/index.md` | Markdown (one topic per line) | permanent | Search acceleration |
+| User Profile | `memory/profile.md` | Markdown (prefs/tech stack/style) | permanent | Personalization |
+| Growth Log | `memory/growth.md` | Markdown (incremental long-term memory log) | permanent | Memory evolution tracking |
+
+---
+
+## 3. imp Scoring: 9-Dimensional Regex
+
+**Core differentiator: Zero neural networks — pure regex importance assessment.**
 
 ```
 base: user=0.40, assistant=0.30
-──────────────────────────────────────
-IMP_INSTRUCT +0.25 help/give/please/do/change/implement/fix/take/continue/then
-IMP_PREF +0.35 like/like/must/cannot/forbidden/principle/bottom line/style
-IMP_DECISION +0.30 decide/confirm/conclusion/select/agreed
-IMP_TODO +0.25 todo/todo/next step/deadline
-IMP_TECH +0.12 optimize/architecture/code/bug/performance/security
-IMP_FACT +0.10 +
-──────────────────────────────────────
-Fix 1: system/
- SYSTEM → 0.02 /system/
- CHITCHAT → 0.10 haha/ok/thanks/roger
-──────────────────────────────────────
-Fix 2: +0.15
- 
- + 
-──────────────────────────────────────
-Fix 3: → 0.75
- >100 + 
-──────────────────────────────────────
-Fix 4 (v4.5): +0.20
- deploy| + | — |system
- change|refactor + architecture| — |
- performance| + must| — |
- cut|streamline + feature| — |module
- compare|evaluate + solution|system|
-──────────────────────────────────────
-Fix 5 (v4.5): / +0.25
- (not|don't|wrong|incorrect|try another approach|start over|overturn)
-──────────────────────────────────────
-Fix 6 (v4.5): compare +0.18
- 
- + 
-──────────────────────────────────────
-Fix 7 (v4.5): / +0.35
- (next time for sure|I guarantee|I promise|I swear|from now on|remembered)
- → 0.90
-──────────────────────────────────────
-: 1.00
+---
+IMP_INSTRUCT  +0.25  help/give/please/do/change/write/implement/fix/deploy/continue/then
+IMP_PREF      +0.35  like/dislike/must/cannot/principle/bottom-line/style/habit
+IMP_DECISION  +0.30  decide/confirm/conclusion/select/adopt/final-plan/agreed
+IMP_TODO      +0.25  todo/next-step/plan/remind/deadline/tomorrow
+IMP_TECH      +0.12  optimize/refactor/architecture/code/bug/performance/security
+IMP_FACT      +0.10  number+unit (CNY/day/hour/month/year/%)
+---
+Fix1: System/chitchat downgrade
+  SYSTEM -> 0.02  heartbeat/system notification/continuation
+  CHITCHAT -> 0.10  ok/thanks/roger
+---
+Fix2: Core principle weighting +0.15
+  constraint words + domain words simultaneously
+---
+Fix3: Long-form directional -> 0.75
+  text >100 chars + (priority/direction/architecture/positioning/evaluate/competitor)
+---
+Fix4: Dual-keyword combo +0.20
+  5 cross-domain pairs (deploy+model, modify+architecture, performance+must, cut+feature, compare+solution)
+---
+Fix5: Negation/correction +0.25
+  (not/wrong/incorrect/try-another-approach/start-over/overturn/cancel)
+---
+Fix6: Comparative decision +0.18
+  comparison words + object words simultaneously
+---
+Fix7: Commitment/promise +0.35
+  (I-guarantee/I-promise/I-swear/from-now-on/remembered/next-time-for-sure)
+  Strong commitments (swear/guarantee/never-forget) -> directly to 0.90
+---
+Cap: 1.00
 ```
 
-**Measured Results:**
+### Measured Results
 
-| Input | Old imp | v4.5 imp | Triggered Rules | — |------|:---:|:---:|------| — | "don'tsolution，performanceno good，try another approach" | ~0.65 | **1.00** | PREF+negation+TECH | — | "must 50ms，" | ~0.70 | **0.95** | PREF+TECH+combo | — | "comparesolution，Mnemosyne  Mem0 simplerfaster" | ~0.70 | **0.90** | TECH+combo+compare | — | "I guaranteeevery time from nowupdate memory-engine" | ~0.60 | **0.90** | Fix7 | — | "" | 0.40 | 0.40 | base only | cosine similarity | ~120ms | fuzzy matching | — | `hybrid` | keyword + semantic | [P1: dedupeResults ] | ~130ms | **recommended default** | — | `recent` | — | (working 25%, raw 25%) | ~120ms | recent focus | — | `history` | — | (long 45%, idx 20%) | ~120ms | historical lookup |
-
-**7-Channel Weight Distribution (hybrid mode):**
-
-| Recall Channel | Weight | Description | — |---------|:---:|------| — | Workbench | 0.10 | current task, recent decisions | — | Injectable | 0.12 | today's topics, facts | — | Chat Logs | 0.15 | raw message stream
-
-**Four-Way Recall Synthesis:**
-
-```
-qa --query ""
- ├─ 1. context: (current task + decisions + facts)
- ├─ 2. profile: User Profile 
- ├─ 3. search: keyword search 
- └─ 4. MEMORY.md: keyword matching 
- → → top-10 + 
-```
-
-### 2.6 Automation Pipelines
-
-| Pipeline | Trigger | Output | — |------|---------|------| — | record | (hook) | JSONL + imp + [P1: batch counter] | — | recall auto | imp≥0.4 & len>20 | last-recall.json (hybrid top3) | — | working refresh | imp≥0.5 × 3 | current.json | — | batch flush | [P1] 10 | syncTranscripts + reindex + consolidate | — | consolidate | 3 | medium | JSONL append + Node | write batching， | — | LoCoMo R@K evaluate 0% | ID | systemcompare |
-
-### ⚠️ Partial Capabilities
-
-| Capability | How Far | Limitation | — |------|--------------|------| — | search | P2 2-gram | — | ❌ | ❌ | — | **Chinese tokenizer** | ✅ 2-gram | ❌ | ❌ | ❌ | ❌ | — | **Git-friendly** | ✅  Markdown | ❌ DB | ❌ | ❌ DB | ❌ | — | **** | ✅ 100% | ⚠️ DB | ❌ API | ✅ | ✅ | — | **install** | bash install.sh | pip install + 79MB | pip + API key | pip + 79MB | — |
-| **RAM (100 docs)** | **0MB** | +114MB | N/A | +103MB | 0MB | — | **search(keyword)** | **42ms** | — | | — | <1ms | — | **search(semantic)** | **130ms** | 160ms | ❌ | 158ms | — |
-
-### 🔴 Disadvantages
-
-| Dimension | Mnemosyne v4.5 | Competitor | Gap | — |------|:---:|------|:---:| — | **write** | 2 docs/s | AgentMemory 4 d/s, SQLite 10K+ d/s | 8.5×–5000×  | — | ** R@K** | 0% (LoCoMo) | SQLite FTS5 17% | — |
-| **** | bigram/trigram | MiniLM-L6 79MB embedding | — |
-| **** | 2-gram | jieba/bge embedding | — |
-| **search** | ❌ | embedding | architecture | — | **** | ❌  LLM | Mem0 + LLM | architecture | — | **** | ❌ | Mem0 + LLM | Memory QA | — | **** | — | ChromaDB | architecture | — | **Node.js ** | record ~500ms | ~10ms | — |
-| **** | 1 | Mem0 10K+ stars | — |
-
-### 📊 Positioning Summary
-
-| Scenario | Mnemosyne v4.5 | When NOT to use | — |------|:---:|------| — | | ✅ **** | — |
-| / | ✅ **** | — |
-| (RPi) | ✅ **** | — |
-| — | ⚠️ |  Mem0 + embedding | — | search | ❌ |  ChromaDB + bge-m3 | — | | ❌ |  Zep / Postgres | — | QA | ⚠️ |  Mem0 + OpenAI |
+| Input | Old imp | v4.5-Pro imp | Triggered Rules |
+|------|:---:|:---:|------|
+| "Don't use the previous approach, performance is bad, try another way" | ~0.65 | **1.00** | PREF+negation+TECH |
+| "Must guarantee search latency under 50ms, hard requirement" | ~0.70 | **0.95** | PREF+TECH+combo |
+| "Compared 3 solutions, Mnemosyne is simpler and faster than Mem0" | ~0.70 | **0.90** | TECH+combo+compare |
+| "I promise to sync to memory-engine every time from now on" | ~0.60 | **0.90** | Fix7 strong commitment |
+| "Nice weather today" | 0.40 | 0.40 | base only (no impact) |
 
 ---
 
-## 5. Complete Command Reference
+## 4. Search: 5 Parallel Modes
 
-### Core Pipeline (5)
-
-| Command | Usage | Description | — |------|------|------| — | `record` | `--role user\|assistant --text "..."` | + imp + batch counter | — | `sync` | `[--quick]` | — | Command | Usage | Description | — |------|------|------| — | `search` | `--query "..." --mode keyword\|hybrid\|semantic\|recent\|history` | + dedupeResults |
-
-### Memory QA (v4.5 new)
-
-| Command | Usage | Description | — |------|------|------| — | `qa` | `--query "..."` | context+profile+search+MEMORY.md |
-
-### Memory Echo (5)
-
-| — | | — |------|------| — | `context` | topic continuation++todo | — | `recall --query "..."` | hybrid top3 | — | `report [--weekly]` | / | — | `profile [--update]` | User Profile/update | — | `distill-proposals --list\|--apply <id>` | — |
-
-### Maintenance (7)
-
-| — | | — |------|------| — | `consolidate [--force\|--check\|--retag]` | / | — | `todos [--add\|--done <id>]` | todo management | — | `embed [--force]` | — |
-| `reindex` | Index | — | `cleanup [--confirm]` | — |
-| `health` | 13 check | — | `stats` | /imp |
+| Mode | Algorithm | Weight Strategy | Latency | Use Case |
+|------|------|---------|:---:|------|
+| keyword | Full-text + bilingual 2-gram tokenizer | 4-layer weighted | ~42ms | Exact search |
+| semantic | Local bigram+trigram vectors (512-dim) | Cosine similarity | ~120ms | Fuzzy matching |
+| hybrid | keyword + semantic fusion | dedupeResults | ~130ms | Recommended default |
+| recent | Same as above | Bias to short-term (working 25%, raw 25%) | ~120ms | Recent focus |
+| history | Same as above | Bias to long-term (long 45%, idx 20%) | ~120ms | Historical lookup |
 
 ---
 
-## 6. Configuration
+## 5. Modules (v4.5-Pro)
 
-`memory/engine/config.json`：
+### time.js — Dynamic Half-Life Decay
 
-```json
-{
- "retention": {
- "injectDays": 7,
- "rawDays": 30,
- "mediumDays": 180,
- "trashDays": 15
- },
- "thresholds": {
- "shortSignalTurns": 5,
- "mediumSignalTurns": 20,
- "workingUpdateMsgs": 3,
- "consolidateMinMsgs": 8,
- "consolidateMinHighImp": 2,
- "consolidateMinImpSum": 3.0,
- "consolidateIntervalMs": 1800000,
- "rawMaxChars": 800
- },
- "recordRaw": true,
- "embed": {
- "defaultEnabled": true,
- "maxRecentDays": 30,
- "dims": 512
- },
- "weights": { /*  2.4  */ }
-}
-```
+| Category | Half-Life | Examples |
+|------|:---:|------|
+| job, location, project, status | 7-14 days | "work at X", "live in Y", "working on Z" |
+| preference, habit, style | 60-90 days | "prefer A over B", "coding style: functional" |
+| birthday, history, identity | infinite | "born on X", "name is Y" |
 
----
+Functions: `getHalfLife()`, `relativeTime()`, `markStale()`, `resolveConflicts()`
 
-## 7. Web API
+### refusal.js — Abstention Front-Loading
 
-`http://127.0.0.1:8765`
+Three-tier system:
+1. **No results** -> high-confidence refusal
+2. **Top score below P10 threshold + low gap** -> likely noise, refuse
+3. **Keyword hit but semantic mismatch** -> low-confidence warning with partial results
 
-### GET
+Functions: `shouldRefuse()`, `scoreDistributionCheck()`
 
-| Endpoint | Description | — |------|------| — | `/api/status` | — |
-| `/api/files` | — |
-| `/api/file?p=path` | — |
-| `/api/download?p=path` | — |
-| `/api/search?q=&mode=` | search | — | `/api/todos` | todo | — | `/api/cleanup-suggestions` | — |
-| `/api/stats` | — |
-| `/api/trash` | — |
+### rewrite.js — Session Query Rewrite
 
-### POST
+- Pronoun resolution from session context (stateless, no persona stored)
+- Abbreviation expansion
+- Post-retrieval keyword expansion
+- Safety valve: all rewrites validated against original query
 
-| Endpoint | Description | — |------|------| — | `/api/enable` `/api/disable` | — |
-| `/api/delete` | → | — | `/api/trash/restore` | — |
-| `/api/trash/purge` | — |
-| `/api/todos/add` | todo | — | `/api/todos/done` | todo | — | `/api/save` | — |
+Functions: `feedSessionMessage()`, `extractSessionContext()`, `rewriteQuery()`, `validateRewrite()`
+
+### multihop.js — Multi-Hop Reasoning
+
+- 6 decomposition patterns for complex questions
+- Per-hop verification (entity overlap check)
+- Evidence chain completeness tracking
+- Automatic stop on drift or max hops
+
+Functions: `decompose()`, `verifyHop()`, `buildEvidenceChain()`, `shouldStop()`
+
+### crosslang.js — Cross-Language Alignment
+
+- 100+ bilingual entity mapping (English <-> Chinese)
+- Automatic bidirectional query expansion
+- Output language constraints
+- Equivalence checking for evaluation
+
+Functions: `expandCrossLang()`, `getOutputConstraint()`, `isEquivalent()`
 
 ---
 
-## 8. Installation
+## 6. Limitations (Honest)
 
-```bash
-# 
-cp -r Mnemosyne-v4.5 ~/.openclaw/workspace/tools/
-cd ~/.openclaw/workspace/tools/Mnemosyne-v4.5 && bash install.sh
-
-# 
-bash /path/to/Mnemosyne-v4.5/install.sh
-
-openclaw gateway restart
-open http://127.0.0.1:8765
-```
-
-：Node.js v18+，OpenClaw CLI。
+| Limitation | Reason | Alternative |
+|------|------|------|
+| No natural language answer generation | No LLM | External LLM for synthesis |
+| No cross-language semantic search | No embedding model | Dictionary-based expansion only |
+| No multi-hop deep reasoning | No neural network | Decomposition only; external LLM needed |
+| Write throughput 2 docs/s | Full pipeline per record | Async queue (planned) |
+| LoCoMo R@K 0% | Returns memory content, not document IDs | Memory-Native Protocol recommended |
 
 ---
 
-## 9. Benchmark Quick Reference
+## 7. 20 Commands
 
-### search (x86_64 / Ubuntu 24.04 / Node v22)
-
-| — | avg | P50 | /q | — |------|-----|-----|:---:| — | keyword | 42ms | 43ms | 16.7 | — | hybrid | 130ms | 131ms | 19.3 |
-
-### vs AgentMemory 0.4.8 (ChromaDB + all-MiniLM-L6 79MB)
-
-| Metric | AgentMemory | Mnemosyne v4.5 | Advantage | — |------|:---:|:---:|:---:| — | search hybrid | 164ms | **130ms** | 1.26× | — | RAM | +114MB | **0MB** | ∞ | — | | 79MB | **0MB** | ∞ | — | install | pip + | **bash install.sh** | ∞ | — | write | 4 d/s | **2 d/s** | 0.5× |
-
-### Feature Completeness (vs 6 systems)
-
-In the 3-dimension composite score (memory pipeline completeness + zero deps + search speed), v4.5 ranks #1 among all tested systems.SQLite FTS5 wins on pure speed (<1ms). ChromaDB has better semantic understanding (79MB MiniLM). But no other system simultaneously offers: layered memory + intelligent scoring + auto-consolidation + topic continuation + zero dependencies.
+| Command | Usage |
+|------|------|
+| `record` | `--role user|assistant --text "..."` |
+| `sync` | `[--quick]` |
+| `status` | — |
+| `enable/disable` | — |
+| `init` | — |
+| `search` | `--query "..." --mode keyword|hybrid|semantic|recent|history` |
+| `qa` | `--query "..."` (Pro: with rewrite + refusal + multihop + time + crosslang) |
+| `context` | — |
+| `recall` | `--query "..."` |
+| `report` | `[--weekly]` |
+| `profile` | `[--update]` |
+| `distill-proposals` | `--list|--apply <id>` |
+| `consolidate` | `[--force|--check|--retag]` |
+| `todos` | `[--add|--done <id>]` |
+| `embed` | `[--force]` |
+| `reindex` | — |
+| `cleanup` | `[--confirm]` |
+| `health` | — |
+| `stats` | — |
 
 ---
 
-## 10. Version History
+## 8. Benchmark Quick Reference
 
-| Version | Date | Lines | Cmds | Key Difference | — |------|------|------|:---:|------| — | v1 | 08-05 | 2,447 | 28 | architecture·Index·7search·Web UI | — | v2 | 08-06 | 2,981 | 36 | configuration···· | — | v3 | 08-06 | 3,093 | 36 | POST+CSRF··todo·hook | — | v3-lite | 08-06 | 2,975 | 14 | streamline | — | v4 | 08-07 | 3,751 | 44 | memory echo·topic continuation·· | — | v4-pro | 08-07 | 3,768 | 44 | 251·5-fold CV·evaluate | — | **v4.5** | **08-08** | **3,250** | **20** | **cut56% + 9imp + P0 QA + P1 write + P2 Chinese tokenizer + Fix7 commitment detection** |
+### Search Latency (x86_64 VM / Ubuntu 24.04 / Node v22)
+
+| Mode | avg | P50 | Hits/q |
+|------|-----|-----|:---:|
+| keyword | 42ms | 43ms | 16.7 |
+| hybrid | 130ms | 131ms | 19.3 |
+
+### vs AgentMemory 0.4.8
+
+| Metric | AgentMemory | v4.5-Pro | Advantage |
+|------|:---:|:---:|:---:|
+| Search hybrid | 164ms | **130ms** | 1.26x |
+| RAM overhead | +114MB | **0MB** | -- |
+| Model download | 79MB | **0MB** | -- |
+| Install | pip+download | **bash install.sh** | -- |
+| Write | 4 d/s | **2 d/s** | 0.5x |
+
+### vs SQLite FTS5 (keyword baseline)
+
+| Metric | SQLite FTS5 | v4.5-Pro |
+|------|:---:|:---:|
+| Search | <1ms | 42ms |
+| Memory features | 0 | 17 capabilities + 5 modules |
+| Zero deps | Yes | Yes |
 
 ---
 
-*🦞 Mnemosyne v4.5 · 2026-08-08 · 3,250  · 20 · Zero-NN · · ·  API key*
+## 9. Version History
+
+| Version | Date | Lines | Cmds | Key Difference |
+|------|------|------|:---:|------|
+| v1 | 08-05 | 2,447 | 28 | 4-layer arch · semantic index · Web UI |
+| v2 | 08-06 | 2,981 | 36 | config.json · recycle bin · consolidate · nightly distill |
+| v3 | 08-06 | 3,093 | 36 | CSRF · truncation protection · IMP_TECH · hook detection |
+| v3-lite | 08-06 | 2,975 | 14 | Stripped version |
+| v4 | 08-07 | 3,751 | 44 | Memory echo · topic continuation · heatmap · time machine |
+| v4-pro | 08-07 | 3,768 | 44 | 251 calibrations · 5-fold CV · evaluation panel |
+| v4.5 | 08-08 | 3,250 | 20 | -56% cmds · 9-dim imp · QA · tokenizer · batching |
+| v4.5-bilingual | 08-08 | 3,255 | 20 | English UI · bilingual tokenizer |
+| **v4.5-Pro** | **08-08** | **3,291** | **20** | **5 pluggable modules** · time-aware · refusal · rewrite · multihop · crosslang |
+
+---
+
+*Mnemosyne v4.5-Pro · 2026-08-08 · 3,291 lines · 20 commands · 5 modules (18.6KB) · Zero-NN · Zero deps · Zero models · Zero API keys*
+
+---
+
+## 中文完整说明
+
+### 一句话定义
+
+Mnemosyne v4.5-Pro 是一个纯本地、零神经网络依赖的认知记忆引擎，配备 5 个可插拔模块（时间感知衰减、拒答前置、查询改写、多跳推理、跨语言对齐）。无需 LLM API、无需 embedding 模型、无需向量数据库。
+
+### 核心能力（19 项）
+
+消息自动记录 · 9维 imp 智能评分 · 四层分层记忆 · 自动摘要整合 · 话题续接 · 记忆回响 · 长期记忆提炼 · 5 模式搜索 · 语义去重 · Memory QA · 双语分词 · 写入批量化 · 时间感知衰减 · 拒答检测 · 查询改写 · 多跳推理 · 跨语言对齐 · 待办管理 · 用户画像
+
+### 时间感知（time.js）
+
+按信息类型自适应衰减：工作/地点 7 天半衰期，偏好/习惯 60-90 天，生日/历史不衰减。冲突记录自动标记 [当前有效]/[已被取代]。
+
+### 拒答前置（refusal.js）
+
+检索层直接判断可靠性：分数低于历史 P10 且 Top-1/Top-2 差距小 → 高置信拒答。关键词命中但无语义匹配 → 低置信警告。
+
+### 查询改写（rewrite.js）
+
+会话级动态上下文提取（不持久化画像），代词消解，缩写展开，检索后关键词扩展，所有改写经安全阀校验。
+
+### 多跳推理（multihop.js）
+
+6 种分解模式，逐跳实体重叠验证，漂移自动终止，证据链完整性检查。
+
+### 跨语言（crosslang.js）
+
+100+ 中英实体映射，自动双向查询扩展，输出语言约束，等价判断。
+
+### 20 命令
+
+record · sync · status · enable/disable · init · search(5模式) · qa · context · recall · report · profile · distill-proposals · consolidate · todos · embed · reindex · cleanup · health · stats
+
+### 性能
+
+keyword 42ms / hybrid 130ms · vs AgentMemory 1.3× 快 · RAM 0MB vs +114MB · 写入 2 docs/s（管道批量化进行中）
+
+*Mnemosyne v4.5-Pro · 2026-08-08 · 3,291行 · 20命令 · 5模块(18.6KB) · Zero-NN · 零依赖*

@@ -46,7 +46,6 @@ function layerOf(p) {
   if (p === 'memory/todos.md') return '待办';
   if (/^memory\/\d{4}-\d{2}-\d{2}\.md$/.test(p)) return '今日摘要';
   if (p.startsWith('memory/engine/')) return '__系统';
-  if (p.startsWith('memory/versions/')) return '__版本';
   if (p.includes('.trash')) return '__回收站';
   if (p.startsWith('memory/') && /^memory\/[^/]+\.(md|json)$/.test(p)) return '其他';
   return '__系统';
@@ -164,7 +163,6 @@ async function handlePost(req, res, fn) {
     res.end(JSON.stringify({ error: String(e.message || e) }));
   }
 }
-
 
 // P2: Markdown 安全渲染 — 过滤 HTML/XSS
 function sanitizeHTML(text) {

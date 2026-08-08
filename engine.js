@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
- * Mnemosyne v4 Pro — OpenClaw 可移植分层记忆引擎
+ * Mnemosyne v4.5 — OpenClaw 可移植分层记忆引擎
  *
  * 命名来源：Mnemosyne（谟涅摩绪涅），希腊记忆女神，缪斯之母。
  *
- * 架构：raw / working / inject / medium / long / index / versions
+ * 架构：raw / working / inject / medium / long / index
  *
  * P0: 短期记忆三层 + 工作记忆 + 结构化压缩 + memory.md边界 + 清理
  * P1: 多路并行召回 + hook补偿 + 敏感信息脱敏
@@ -88,8 +88,6 @@ const SHORT_RETAIN_DAYS = 30;   // 短期记忆保留天数（之后 gzip 归档
 const MEDIUM_RETAIN_DAYS = 180; // 中期记忆保留天数
 const EMBED_RECENT_DAYS = CFG.embed.maxRecentDays;   // 语义索引只覆盖最近 N 天的短期对话
 const ARCHIVE_INTERVAL_MS = 6 * 3600 * 1000; // sync 时归档检查节流
-const VERSION_RETAIN = 50; // 保留最近 50 个 MEMORY.md 版本
-const VERSION_COOLDOWN = 3600 * 1000; // 同一小时不重复快照（避免高频刷写）
 const LOCK_FILE = path.join(D.engine, 'lockfile');
 const LOCK_TIMEOUT_MS = 120000; // 锁超时 2 分钟
 const DISTILL_PROPOSALS_FILE = path.join(D.engine, 'distill-proposals.json');
@@ -249,6 +247,27 @@ const IMP_CHITCHAT = /^(哈哈+|嗯+|ok\s*$|okay\s*$|谢谢\s*$|收到\s*$|明�
 // 封顶: 1.0
 // 闲聊降级: 仅含哈哈/嗯/好的/ok/谢谢/收到/明白 等 → 固定 0.1
 // 手动校准: engine.js imp-calibrate --date "2026-08-06" --line <N> --imp 0.8
+
+// P2: 中文分词 — 零依赖 2-gram + 单字过滤，替代 split(/\s+/) 提升中文搜索命中率
+function tokenizeChinese(text) {
+  const s = String(text || '');
+  const tokens = [];
+  // 2-gram 滑动窗口
+  for (let i = 0; i < s.length - 1; i++) {
+    const bigram = s.slice(i, i + 2);
+    // 仅保留连续 CJK 字符的 bigram
+    if (/[\u4e00-\u9fff]{2}/.test(bigram)) tokens.push(bigram);
+  }
+  // 英文/数字词保留
+  const enWords = s.match(/[a-zA-Z0-9_]{2,}/g);
+  if (enWords) tokens.push(...enWords);
+  // 去重 + 去停用词（高频但无检索价值的单字/2-gram）
+  const STOP = new Set(['一个','这个','那个','什么','怎么','为什么','可以','不是','已经','没有','如果','但是','因为','所以']);
+  const unique = [...new Set(tokens)].filter(t => !STOP.has(t));
+  // 回退：如果切不出任何词，用原始查询
+  return unique.length ? unique : (s.length > 2 ? [s.slice(0, 10)] : [s]);
+}
+
 function importanceOf(role, text) {
   const t = String(text || '').trim();
   if (!t) return 0;
@@ -278,6 +297,35 @@ function importanceOf(role, text) {
   // Fix 3: 长文本方向性检测（>100字+方向词）
   if (t.length > 100 && /优先级|方向|架构|定位|原则|可行性|评估|竞品|对标|差异化/.test(t)) {
     score = Math.max(score, 0.75);
+  }
+
+  // Fix 4 (v4.5 P0): 双关键词组合检测 — 跨领域词同时出现 = 高价值决策/规划
+  const COMBO_PAIRS = [
+    [/部署|上线|发布/i, /模型|引擎|系统|服务/i],
+    [/修改|重构|重写/i, /架构|核心|底层/i],
+    [/性能|速度|延迟/i, /必须|要求|目标|指标/i],
+    [/砍|精简|去掉|移除/i, /功能|命令|模块/i],
+    [/对比|比较|评估/i, /方案|系统|工具|框架/i],
+  ];
+  for (const [a, b] of COMBO_PAIRS) {
+    if (a.test(t) && b.test(t)) { score += 0.2; break; }
+  }
+
+  // Fix 5 (v4.5 P0): 否定/纠正语义 — 主动否定=高价值决策信号
+  if (/(不是|不要|不用|别用|不要用|不可以|不能|不对|错了|不对的|不行|不行的|不合适|不是这样|理解错了|之前的不|以前的方案?不|之前的不要|换个思路|换个方向|重新来|推翻|取消)/i.test(t)) {
+    if (t.length > 15) score += 0.25;
+  }
+
+  // Fix 6 (v4.5 P0): 对比决策 — A vs B 明确表态
+  if (/(比|不如|超过|更好|更优|更强|更快|更简洁|更简单|更强|完胜|碾压)/.test(t) && /方案|系统|工具|方法|模型|引擎/.test(t)) {
+    score += 0.18;
+  }
+
+  // Fix 7 (v4.5): 承诺/保证语义 — "下次一定""以后肯定""保证"类语句直接推高
+  if (/(下次一定|下次会|下次要|后面肯定|以后肯定|之后一定|我保证|我承诺|我答应|发誓|一定做到|绝对会|不会再忘|永远不会忘|永远记住|记住了|记住这个|别忘了|记着|以后每次都|从今往后|我后面|后面会|以后会|之后会)/i.test(t)) {
+    score += 0.35;
+    // 特别强承诺: "发誓""保证""永远不会忘"直接推到接近满分
+    if (/(发誓|保证|永远不会忘|永远记住|从今往后)/i.test(t)) score = Math.max(score, 0.9);
   }
 
   if (role === 'user' && /[?？]\s*$/.test(t)) score += 0.05;
@@ -422,48 +470,6 @@ function syncTranscripts() {
 }
 
 // 多会话聚合视图（功能 12）
-function cmdSessions() {
-  const agentsDir = path.join(openclawHome(), 'agents');
-  const sessions = [];
-  if (!fs.existsSync(agentsDir)) return out({ total: 0, sessions });
-  const now = Date.now();
-  for (const agent of fs.readdirSync(agentsDir)) {
-    const sessDir = path.join(agentsDir, agent, 'sessions');
-    let entries = [];
-    try { entries = fs.readdirSync(sessDir); } catch { continue; }
-    for (const name of entries) {
-      if (!name.endsWith('.jsonl') || name.endsWith('.trajectory.jsonl')) continue;
-      const full = path.join(sessDir, name);
-      let st; try { st = fs.statSync(full); } catch { continue; }
-      if (now - st.mtimeMs > TRANSCRIPT_WINDOW_MS) continue;
-      let firstTs = null, lastTs = null, msgs = 0, firstUser = '';
-      try {
-        for (const line of fs.readFileSync(full, 'utf8').split('\n')) {
-          if (!line.trim()) continue;
-          let o; try { o = JSON.parse(line); } catch { continue; }
-          if (o.type !== 'message') continue;
-          const m = o.message || {};
-          if (m.role !== 'user' && m.role !== 'assistant') continue;
-          msgs++;
-          if (!firstTs) firstTs = o.timestamp;
-          lastTs = o.timestamp;
-          if (m.role === 'user' && !firstUser) {
-            const c = typeof m.content === 'string' ? m.content
-              : Array.isArray(m.content) ? m.content.filter(b => b && b.type === 'text').map(b => b.text).join(' ') : '';
-            firstUser = String(c).replace(/\s+/g, ' ').trim().slice(0, 80);
-          }
-        }
-      } catch { continue; }
-      if (!msgs) continue;
-      sessions.push({
-        agent, session: name.replace('.jsonl', ''),
-        messages: msgs, firstTs, lastTs, topic: firstUser,
-      });
-    }
-  }
-  sessions.sort((a, b) => String(b.lastTs).localeCompare(String(a.lastTs)));
-  out({ total: sessions.length, windowHours: 48, sessions: sessions.slice(0, 50) });
-}
 
 // ============================================================
 // 索引自动补全
@@ -1100,7 +1106,6 @@ function autoConsolidate(opts = {}) {
   let med = fs.existsSync(medFile) ? fs.readFileSync(medFile, 'utf8') : `# ${today()} 中期摘要\n`;
   fs.writeFileSync(medFile, med.trimEnd() + '\n\n' + block.text + '\n');
   try { reindex(); } catch {}
-  try { buildContentIndex(); } catch {}
   // v4: 自动更新用户画像
   try { cmdProfile({update: true}); } catch {}
 
@@ -1211,8 +1216,6 @@ function cmdDistillProposals(opts) {
       p.status = 'applied';
     }
     fs.writeFileSync(LONG_FILE, mem);
-    snapshotMEMORY(true);
-    buildContentIndex();
     appendDevLog(`审阅通过: ${p.content.slice(0, 40)}…`);
     appendGrowthLog(p.content, p.section);
   } finally { releaseLock(); }
@@ -1222,219 +1225,13 @@ function cmdDistillProposals(opts) {
   out({ applied: p.status === 'applied', proposal: p });
 }
 
-function cmdDistillReject(opts) {
-  const id = parseInt(opts.id, 10);
-  const dp = loadDistillProposals();
-  const p = dp.proposals.find(x => x.id === id);
-  if (!p) return out({ error: 'proposal not found' });
-  p.status = 'rejected'; p.rejected_at = nowIso(); p.reason = opts.reason || '';
-  dp.updated_at = nowIso();
-  fs.writeFileSync(DISTILL_PROPOSALS_FILE, JSON.stringify(dp, null, 2));
-  out({ rejected: true, proposal: p });
-}
 
 // P1: imp 手动校准 — 修正特定消息的重要性评分
-function cmdImpCalibrate(opts) {
-  const date = opts.date || today();
-  const rawFile = path.join(D.shortRaw, date + '.jsonl');
-  if (!fs.existsSync(rawFile)) return out({ error: 'raw file not found: ' + rawFile });
-  const lines = fs.readFileSync(rawFile, 'utf8').split('\n').filter(l => l.trim());
-  const lineNum = parseInt(opts.line, 10);
-  if (!lineNum || lineNum < 1 || lineNum > lines.length) return out({ error: 'invalid line number, total: ' + lines.length });
-  const target = lines[lineNum - 1];
-  let msg; try { msg = JSON.parse(target); } catch { return out({ error: 'not valid JSON' }); }
-  const oldImp = msg.imp;
-  msg.imp = parseFloat(opts.imp);
-  if (isNaN(msg.imp) || msg.imp < 0 || msg.imp > 1) return out({ error: 'imp must be 0-1' });
-  lines[lineNum - 1] = JSON.stringify(msg);
-  fs.writeFileSync(rawFile, lines.join('\n') + '\n');
-  // 记录校准
-  const calLog = path.join(D.engine, 'imp-calibration.json');
-  let cal = [];
-  try { cal = JSON.parse(fs.readFileSync(calLog, 'utf8')); } catch {}
-  cal.push({ date, line: lineNum, oldImp, newImp: msg.imp, text: String(msg.text || '').slice(0, 80), at: nowIso(), reason: opts.reason || '' });
-  fs.writeFileSync(calLog, JSON.stringify(cal, null, 2));
-  out({ calibrated: true, date, line: lineNum, oldImp, newImp: msg.imp, text: String(msg.text || '').slice(0, 80) });
-}
 
 // P1: 对话记录开关 — 可选择不保存 raw，其他功能照常
-function cmdRecordRaw(opts) {
-  const cfg = loadConfig();
-  const has = (k) => Object.prototype.hasOwnProperty.call(opts, k);
-  if (has('enable')) cfg.recordRaw = true;
-  else if (has('disable')) cfg.recordRaw = false;
-  else return out({ recordRaw: cfg.recordRaw !== false, usage: 'engine.js record-raw --enable|--disable' });
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2));
-  out({ recordRaw: cfg.recordRaw !== false, note: cfg.recordRaw !== false ? '对话记录已开启' : '对话记录已关闭（仅关闭 raw，其他功能正常）' });
-}
 
-// ============================================================
-// MEMORY.md 版本化 & 冲突检测
-// 每次 save 或外部写入后自动快照，保留最近 VERSION_RETAIN 个版本
-// 冲突判定：对比当前版与前版，输出标题级差异
-// ============================================================
-
-function snapshotMEMORY(force) {
-  if (!fs.existsSync(LONG_FILE)) return null;
-  const content = fs.readFileSync(LONG_FILE, 'utf8');
-  const hash = contentHash(content);
-  const last = lastSnapshot();
-  if (!force && last && last.hash === hash) return null; // 无变化
-  if (!force && last && Date.now() - new Date(last.ts).getTime() < VERSION_COOLDOWN) return null;
-
-  const verId = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  const info = { id: verId, ts: nowIso(), size: content.length, hash, sections: parseSections(content) };
-  const file = path.join(D.versions, `${verId}.json`);
-  fs.writeFileSync(file, JSON.stringify({ ...info, content }, null, 2));
-
-  // 清理旧版本
-  const all = listVersions();
-  if (all.length > VERSION_RETAIN) {
-    for (const v of all.slice(VERSION_RETAIN)) fs.unlinkSync(v.path);
-  }
-  return { version: verId, hash, sections: info.sections.length };
-}
-
-function parseSections(content) {
-  const sections = [];
-  const lines = content.split('\n');
-  let current = null;
-  for (const line of lines) {
-    const m = line.match(/^#{1,3}\s+(.+)/);
-    if (m) {
-      if (current) sections.push(current);
-      current = { title: m[1].trim(), level: line.match(/^#+/)[0].length, items: [] };
-    } else if (current && line.trim().startsWith('-')) {
-      current.items.push(line.trim());
-    }
-  }
-  if (current) sections.push(current);
-  return sections;
-}
-
-function lastSnapshot() {
-  const all = listVersions();
-  return all.length ? require(all[0].path) : null;
-}
-
-function listVersions() {
-  if (!fs.existsSync(D.versions)) return [];
-  return fs.readdirSync(D.versions)
-    .filter(f => f.endsWith('.json'))
-    .sort().reverse()
-    .map(f => ({ id: f.replace('.json', ''), path: path.join(D.versions, f) }));
-}
-
-function cmdVersion(opts) {
-  ensureDirs();
-  // same-hour dedup
-  const last = lastSnapshot();
-  if (last && Date.now() - new Date(last.ts).getTime() < VERSION_COOLDOWN && opts.force === undefined) {
-    return out({ snapshotted: false, note: '一小时内已快照，用 --force 强制', previous: last.id });
-  }
-  const r = snapshotMEMORY(true);
-  if (!r) return out({ snapshotted: false, note: '无变更' });
-  out({ snapshotted: true, version: r.version, hash: r.hash, sections: r.sections });
-}
-
-function cmdVersionHistory() {
-  ensureDirs();
-  const all = listVersions().slice(0, 20);
-  const entries = [];
-  for (const v of all) {
-    try {
-      const d = require(v.path);
-      entries.push({ id: d.id, ts: d.ts, hash: d.hash, size: d.size, sectionTitles: (d.sections || []).map(s => s.title) });
-    } catch {}
-  }
-  out({ total: all.length, versions: entries });
-}
-
-function cmdVersionDiff(opts) {
-  ensureDirs();
-  const all = listVersions();
-  if (all.length < 2) return out({ error: '至少需要 2 个版本才能对比' });
-
-  const newer = opts.v1 ? all.find(v => v.id === opts.v1) : all[0];
-  const older = opts.v2 ? all.find(v => v.id === opts.v2) : all[1];
-  if (!newer || !older) return out({ error: '指定版本不存在' });
-
-  const na = require(newer.path);
-  const ob = require(older.path);
-  const changes = [];
-
-  // 节级对比
-  for (const ns of na.sections || []) {
-    const os = (ob.sections || []).find(s => s.title === ns.title);
-    if (!os) { changes.push({ type: 'added', title: ns.title, items: ns.items }); continue; }
-    const added = ns.items.filter(i => !os.items.includes(i));
-    const removed = os.items.filter(i => !ns.items.includes(i));
-    if (added.length || removed.length) {
-      changes.push({ type: 'modified', title: ns.title, added, removed });
-    }
-  }
-  for (const os of ob.sections || []) {
-    if (!(na.sections || []).find(s => s.title === os.title)) {
-      changes.push({ type: 'removed', title: os.title, items: os.items });
-    }
-  }
-
-  out({
-    v1: { id: newer.id, ts: na.ts },
-    v2: { id: older.id, ts: ob.ts },
-    sameHash: na.hash === ob.hash,
-    changes,
-  });
-}
 
 // 冲突检测（输出长期记忆中可能存在矛盾的条目）
-function cmdConflict() {
-  ensureDirs();
-  const content = fs.existsSync(LONG_FILE) ? fs.readFileSync(LONG_FILE, 'utf8') : '';
-  const pairs = [];
-  // 启发式：在同一节下查找包含否定词或矛盾关键词的相邻条目
-  const sections = content.split(/^#{1,3}\s+/m).slice(1);
-  for (const sec of sections) {
-    const items = sec.split('\n').filter(l => l.trim().startsWith('-'));
-    for (let i = 0; i < items.length; i++) {
-      for (let j = i + 1; j < items.length; j++) {
-        const a = items[i], b = items[j];
-        // 同主题矛盾词
-        const negators = /不再|不再需要|取消|废除|推翻|撤回|过时|废弃|迁移|替换为|取代/;
-        if (negators.test(a) || negators.test(b)) {
-          // 提取公共关键词
-          const kwA = a.replace(/[-+]/g, '').slice(0, 20);
-          const kwB = b.replace(/[-+]/g, '').slice(0, 20);
-          const share = [...new Set(kwA)].filter(c => c !== ' ' && kwB.includes(c));
-          if (share.length > 3) {
-            pairs.push({ a: a.trim().slice(0, 120), b: b.trim().slice(0, 120), sharedChars: share.length });
-          }
-        }
-      }
-    }
-  }
-  // ⑧ P3 自动修复：标记冲突条目为 superseded
-  const conflicts = pairs.slice(0, 10);
-  const autoResolve = [];
-  for (const c of conflicts) {
-    // 简单启发式：含否定词的那条标为 superseded
-    const negators = /不再|不再需要|取消|废除|推翻|撤回|过时|废弃|迁移|替换为|取代/;
-    const older = negators.test(c.a) ? c.a : c.b;
-    const newer = older === c.a ? c.b : c.a;
-    if (!content.includes(`[superseded] ${older}`)) {
-      autoResolve.push({ superseded: older.slice(0, 60), suggested: newer.slice(0, 60), action: '标记 superseded 或移入变更记录' });
-    }
-  }
-  // 同时检查变更记录表
-  const changeLog = content.match(/## 变更记录[\s\S]*/);
-  out({
-    hasConflicts: conflicts.length > 0,
-    conflicts,
-    autoResolve: autoResolve.length ? autoResolve : undefined,
-    recommendation: conflicts.length ? '建议 review 后决定保留哪条，旧条目建议移入变更记录' : '未检测到明显冲突',
-    changeLog: changeLog ? changeLog[0].split('\n').filter(l => l.trim().startsWith('-')).length + ' 条变更记录' : '无变更记录节',
-  });
-}
 
 // ============================================================
 // MEMORY.md 结构化索引（多字段：关键词/标签/实体/时间/节）
@@ -1442,66 +1239,6 @@ function cmdConflict() {
 
 const CONTENT_INDEX_FILE = null; // v5.1: 已合并到 index/index.md，此行仅作向后兼容
 
-function buildContentIndex() {
-  ensureDirs();
-  // 删除旧 JSON 文件（迁移）
-  const oldJson = path.join(D.index, 'content-index.json');
-  try { if (fs.existsSync(oldJson)) fs.unlinkSync(oldJson); } catch {}
-
-  const content = fs.existsSync(LONG_FILE) ? fs.readFileSync(LONG_FILE, 'utf8') : '';
-  const sections = content.split(/^#{1,3}\s+/m).slice(1);
-  const entries = [];
-
-  for (const sec of sections) {
-    const lines = sec.split('\n');
-    const title = lines[0].trim();
-    const body = lines.slice(1).join(' ');
-
-    const keywords = new Set();
-    for (const kw of body.match(/[A-Z][a-z]{2,}|[\u4e00-\u9fff]{2,4}|["「]([^"」]+)["」]/g) || []) {
-      keywords.add(kw.replace(/[\"「」]/g, '').toLowerCase());
-    }
-    const entities = [];
-    for (const m of body.match(/https?:\/\/[^\s]+|[\w.]+@[\w.]+|\d{4}-\d{2}-\d{2}|v?\d+\.\d+[.\d]*/g) || []) {
-      entities.push(m);
-    }
-    entries.push({ section: title, items: lines.filter(l => l.trim().startsWith('-')).length, keywords: [...keywords].slice(0, 20), entities: entities.slice(0, 5) });
-  }
-
-  // 追加结构化索引到 index/index.md 末尾
-  const marker = '<!-- content-index:start -->';
-  const endMarker = '<!-- content-index:end -->';
-  let idx = fs.readFileSync(INDEX_FILE, 'utf8');
-
-  let block = marker + '\n';
-  for (const e of entries) {
-    block += '- **' + e.section + '**（' + e.items + ' 条目）';
-    if (e.keywords.length) block += ' | 词: ' + e.keywords.slice(0, 8).join(', ');
-    if (e.entities.length) block += ' | 实体: ' + e.entities.join(', ');
-    block += '\n';
-  }
-  block += endMarker + '\n';
-
-  if (idx.includes(marker)) {
-    const startIdx = idx.indexOf(marker);
-    const endIdx = idx.indexOf(endMarker) + endMarker.length;
-    idx = idx.slice(0, startIdx) + block + idx.slice(endIdx);
-  } else {
-    idx += '\n' + block;
-  }
-  fs.writeFileSync(INDEX_FILE, idx);
-  return entries;
-}
-
-function loadContentIndex() {
-  return { builtAt: null, sections: [] };
-}
-
-function cmdContentIndex(opts) {
-  ensureDirs();
-  const entries = buildContentIndex();
-  out({ builtAt: nowIso(), sectionCount: entries.length, sections: entries, note: '已同步到 memory/index/index.md（查看末尾标记块）' });
-}
 
 // ============================================================
 
@@ -1531,7 +1268,7 @@ function queryWeights(opts) {
 
 // 单层搜索结果
 function searchLayer(query, layer, opts = {}) {
-  const terms = query.split(/\s+/).filter(Boolean);
+  const terms = tokenizeChinese(query);
   const results = [];
 
   const match = (text) => {
@@ -1688,57 +1425,6 @@ async function multiPathSearch(query, opts = {}) {
 
 const PERM_FILE = path.join(D.engine, 'permissions.json');
 
-function loadPermissions() {
-  try { return JSON.parse(fs.readFileSync(PERM_FILE, 'utf8')); }
-  catch {
-    const def = { default: 'read', agents: {}, sessions: {} };
-    fs.writeFileSync(PERM_FILE, JSON.stringify(def, null, 2));
-    return def;
-  }
-}
-
-function savePermissions(p) {
-  ensureDirs();
-  fs.writeFileSync(PERM_FILE, JSON.stringify(p, null, 2));
-}
-
-function checkPermission(agentId, sessionId) {
-  const p = loadPermissions();
-  const agentPerm = agentId && p.agents[agentId];
-  const sessionPerm = sessionId && p.sessions[sessionId];
-  return { canRead: true, canWrite: (agentPerm || sessionPerm || p.default) !== 'read', level: agentPerm || sessionPerm || p.default };
-}
-
-function cmdPermission(opts) {
-  ensureDirs();
-  const p = loadPermissions();
-
-  // 设置权限
-  if (opts.agent && opts.level) {
-    p.agents[opts.agent] = opts.level;
-    savePermissions(p);
-    return out({ set: true, agent: opts.agent, level: opts.level });
-  }
-  if (opts.session && opts.level) {
-    p.sessions[opts.session] = opts.level;
-    savePermissions(p);
-    return out({ set: true, session: opts.session, level: opts.level });
-  }
-  if (opts.default) {
-    p.default = opts.default;
-    savePermissions(p);
-    return out({ set: true, default: p.default });
-  }
-
-  // 查看
-  out({
-    default: p.default,
-    agentCount: Object.keys(p.agents).length,
-    sessionCount: Object.keys(p.sessions).length,
-    agents: p.agents,
-    sessions: p.sessions,
-  });
-}
 
 // ============================================================
 // Gateway 配置读取（HTTP wake API / embedding API key）
@@ -2065,47 +1751,6 @@ function dedupe(items) {
 // Git 备份（功能 10）
 // ============================================================
 
-function cmdBackup(opts) {
-  ensureDirs();
-  const run = (args) => execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
-
-  // 自动版本快照
-  let version = null;
-  try { version = snapshotMEMORY(true); buildContentIndex(); } catch {}
-
-  // 确认是 git 仓库
-  try {
-    run(['rev-parse', '--git-dir']);
-  } catch {
-    run(['init', '-b', 'main']);
-  }
-  // 确认身份
-  try { run(['config', 'user.name']); } catch { run(['config', 'user.name', 'memory-engine']); }
-  try { run(['config', 'user.email']); } catch { run(['config', 'user.email', 'memory-engine@local']); }
-
-  // 只提交记忆相关文件（白名单，不误提交其他工作区文件）
-  const paths = ['MEMORY.md', 'MEMORY-PROTOCOL.md', 'memory', 'tools/memory-engine'];
-  run(['add', '--', ...paths.filter(p => fs.existsSync(path.join(ROOT, p)))]);
-
-  const status = run(['status', '--porcelain', '--', ...paths.filter(p => fs.existsSync(path.join(ROOT, p)))]);
-  if (!status && opts.force === undefined) {
-    return out({ backup: true, committed: false, note: '无变更，无需提交' });
-  }
-  const msg = opts.msg || `memory: 自动备份 ${nowIso()}`;
-  const commitOut = run(['commit', '-m', msg]);
-  const sha = run(['rev-parse', '--short', 'HEAD']);
-  const files = status ? status.split('\n').length : 0;
-  out({ backup: true, committed: true, sha, files, message: msg, log: commitOut.split('\n')[0] });
-}
-
-function cmdBackupLog() {
-  try {
-    const log = execFileSync('git', ['log', '--oneline', '-20', '--', 'memory', 'MEMORY.md'], { cwd: ROOT, encoding: 'utf8' }).trim();
-    out({ log: log ? log.split('\n') : [] });
-  } catch (e) {
-    out({ error: String(e.message).slice(0, 200) });
-  }
-}
 
 // ============================================================
 // v5.1 内置清理：定期删除无用文件（inject/日志/过期建议/孤立文件）
@@ -2178,15 +1823,6 @@ function cmdCleanup(opts) {
     if (Date.now() - st.mtimeMs < CLEANUP_RULES.debugLogMaxDays * 86400000) continue;
     remove(fp, `调试日志超过 ${CLEANUP_RULES.debugLogMaxDays} 天`);
   }
-
-  // 4. 过期版本快照（超出 VERSION_RETAIN 的删除）
-  const allVer = listVersions();
-  if (allVer.length > VERSION_RETAIN) {
-    for (const v of allVer.slice(VERSION_RETAIN)) {
-      remove(v.path, `版本快照超出保留数 ${VERSION_RETAIN}`);
-    }
-  }
-
   // 5. 孤立的 workmemory 备份文件（只保留 current.json）
   for (const f of fs.readdirSync(D.shortWorking)) {
     if (f === 'current.json') continue;
@@ -2210,7 +1846,6 @@ function cmdCleanup(opts) {
 
   // 6. 清理空目录
   if (CLEANUP_RULES.emptyDirs && !dryRun) {
-    const dirsToCheck = [D.shortRaw, D.shortWorking, D.shortInject, D.shortArchive, D.mediumArchive, D.versions];
     for (const dir of dirsToCheck) {
       try {
         if (fs.existsSync(dir) && !fs.readdirSync(dir).length) {
@@ -2307,38 +1942,10 @@ function compressForStorage(text) {
 // v3 配置管理
 // ============================================================
 
-function cmdConfig(opts) {
-  ensureDirs();
-  const cfg = loadConfig();
-  if (opts.get) {
-    const path = opts.get.split('.');
-    let v = cfg;
-    for (const p of path) { if (v && typeof v === 'object') v = v[p]; else break; }
-    return out({ key: opts.get, value: v });
-  }
-  if (opts.set && opts.value !== undefined) {
-    const path2 = opts.set.split('.');
-    let newCfg = JSON.parse(JSON.stringify(cfg));
-    let target = newCfg;
-    for (let i = 0; i < path2.length - 1; i++) { if (!target[path2[i]]) target[path2[i]] = {}; target = target[path2[i]]; }
-    const last = path2[path2.length - 1];
-    let val = opts.value;
-    if (val === 'true') val = true; else if (val === 'false') val = false; else if (!isNaN(Number(val))) val = Number(val);
-    target[last] = val;
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify(newCfg, null, 2));
-    return out({ set: true, key: opts.set, value: val, note: '已更新。下次 sync 生效。' });
-  }
-  if (opts.reset !== undefined) {
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify(DEFAULT_CONFIG, null, 2));
-    return out({ reset: true, note: '配置已恢复默认' });
-  }
-  out(cfg);
-}
 
 // ============================================================
 // P1 hook补偿扫描：检测未提炼raw/缺失摘要/索引断裂/工作记忆过期
 // ============================================================
-
 
 
 // ============================================================
@@ -2416,7 +2023,6 @@ function compensationScan() {
   }
 
   try { reindex(); } catch {}
-  try { buildContentIndex(); } catch {}
   return issues;
 }
 
@@ -2463,12 +2069,24 @@ function cmdRecord(role, text) {
     }
   }
   saveState(s);
-  // 每次落盘顺带补录转录里的消息 + 索引补全（增量，开销小）
-  syncTranscripts();
-  reindex();
-  // v5.2：自动整合检查（节流，满足条件才写中期摘要块）
-  let consolidated = null;
-  try { consolidated = autoConsolidate(); } catch {}
+  // P1 写入批量化: sync/reindex/consolidate 改为攒批触发
+  // JSONL 落盘永远实时（<1ms）; 重操作延迟到每 10 条或 30 秒统一执行
+  s._batchCount = (s._batchCount || 0) + 1;
+  const BATCH_SIZE = 10;
+  const BATCH_INTERVAL_MS = 30000;
+  const lastFlush = s._lastBatchFlush || 0;
+  const shouldFlush = s._batchCount >= BATCH_SIZE || (Date.now() - lastFlush) > BATCH_INTERVAL_MS;
+
+  if (shouldFlush) {
+    syncTranscripts();
+    reindex();
+    let consolidated = null;
+    try { consolidated = autoConsolidate(); } catch {}
+    s._batchCount = 0;
+    s._lastBatchFlush = Date.now();
+    saveState(s);
+    if (consolidated) s.lastConsolidateAt = nowIso();
+  }
 
   // v4.1: Recall 自动触发 — 用户高 imp 消息自动搜索相关历史
   if (role === 'user' && imp >= 0.4 && text.length > 20) {
@@ -2506,7 +2124,7 @@ function cmdStatus() {
   s.nextSignalIn = Math.min(s.nextShortIn, s.nextMediumIn);
   s.root = ROOT;
   s.engineDir = ENGINE_DIR;
-  s.version = 'Mnemosyne v4 Pro';
+  s.version = 'Mnemosyne v4.5';
   // 附加 v5 状态
   const vec = loadVectors();
   s.semanticEnabled = s.semanticEnabled || false;
@@ -2534,12 +2152,6 @@ function cmdSetEnabled(on) {
   out({ enabled: on });
 }
 
-function cmdSignal() {
-  const s = loadState();
-  s.lastSignalAt = nowIso();
-  saveState(s);
-  sendSignal(s.turns, 'medium', () => out({ signalSent: true, turns: s.turns }));
-}
 
 function cmdInit() {
   ensureDirs();
@@ -2607,7 +2219,6 @@ function cmdSync(opts = {}) {
       saveState(sc);
       try { cmdCleanupSilent(); } catch {}
     }
-    try { version = snapshotMEMORY(); buildContentIndex(); } catch {}
     // v4: 自动更新用户画像
     try { cmdProfile({update: true}); } catch {}
   }
@@ -2686,12 +2297,6 @@ function getStaleEntries(daysThreshold = 60) {
   }
   return result.sort((a,b) => b.daysStale - a.daysStale);
 }
-function cmdStale(opts) {
-  ensureDirs();
-  const days = parseInt(opts.days, 10) || 60;
-  const stale = getStaleEntries(days);
-  out({ staleCount: stale.length, threshold: days + '天', entries: stale });
-}
 
 function appendDevLog(entry) {
   ensureDirs();
@@ -2739,18 +2344,6 @@ function appendGrowthLog(entry, section) {
   return line;
 }
 
-function cmdDevLog(opts) {
-  ensureDirs();
-  if (opts.log) {
-    const line = appendDevLog(opts.log);
-    return out({ logged: true, line });
-  }
-  // 查看最近日志
-  const idx = fs.existsSync(INDEX_FILE) ? fs.readFileSync(INDEX_FILE, 'utf8') : '';
-  const section = idx.match(/## 开发日志\n[\s\S]*/);
-  const lines = section ? section[0].split('\n').filter(l => l.startsWith('|') && l.includes('|')) : [];
-  out({ total: lines.length, recent: lines.slice(-10) });
-}
 
 // 在 sync 中自动记录变更到 daily note + devlog
 function autoDevLog(synced, inject, working) {
@@ -2774,95 +2367,11 @@ function autoDevLog(synced, inject, working) {
 // P2 全量索引重建
 // ============================================================
 
-function cmdReindexAll(opts) {
-  ensureDirs();
-  const stat = {};
-
-  // 1. 索引补全
-  stat.reindex = reindex();
-
-  // 2. 结构化内容索引
-  try { stat.contentIndex = buildContentIndex(); stat.contentCount = stat.contentIndex.length; } catch(e) { stat.contentError = e.message; }
-
-  // 3. 语义索引重建
-  const s = loadState();
-  if (s.semanticEnabled) {
-    try {
-      const vec = loadVectors();
-      if (opts.force !== undefined || vec.items.length === 0) {
-        // 强制重建：删除旧向量文件
-        const savedLog = console.log;
-        console.log = () => {};
-        stat.semantic = { rebuilt: false };
-        try {
-          // 清空旧索引
-          saveVectors({ mode: 'local', dim: 512, items: [], remoteFailed: false });
-          // 等价于 embed --force
-          const _opts = { force: '' };
-          const oldEmbed = cmdEmbed;
-          // 直接调用重建
-          console.log = savedLog;
-        } catch(e2) { stat.semanticError = e2.message; }
-      } else {
-        stat.semantic = { items: vec.items.length, mode: vec.mode, note: '索引已存在，加 --force 重建' };
-      }
-    } catch(e) { stat.semanticError = e.message; }
-  } else {
-    stat.semantic = { note: '语义搜索未开启，跳过。先 embed --enable' };
-  }
-
-  // 4. TODO 提取
-  try { stat.todos = extractTodos(); } catch(e) { stat.todoError = e.message; }
-
-  // 5. 工作记忆刷新
-  try { stat.working = buildWorkingMemory() ? '已刷新' : '失败'; } catch(e) { stat.workingError = e.message; }
-
-  // 6. 补偿扫描
-  try { stat.compensation = compensationScan(); } catch(e) { stat.compensationError = e.message; }
-
-  out({ rebuilt: true, at: nowIso(), stat });
-}
 
 // ============================================================
 // P2 恢复：从版本快照恢复 MEMORY.md
 // ============================================================
 
-function cmdRestore(opts) {
-  ensureDirs();
-  const all = listVersions();
-
-  if (opts.list !== undefined || (!opts.id && !opts.from)) {
-    const entries = all.slice(0, 10).map(v => {
-      try {
-        const d = JSON.parse(fs.readFileSync(v.path, 'utf8'));
-        return { id: d.id, ts: d.ts, hash: d.hash, size: d.size, sectionCount: (d.sections || []).length };
-      } catch { return { id: v.id, error: '无法读取' }; }
-    });
-    return out({ action: 'list', versions: entries, hint: '用 --id <版本ID> 恢复指定版本，或用 --from latest 恢复最新' });
-  }
-
-  let target = null;
-  if (opts.from === 'latest' || !opts.id) {
-    target = all.length ? all[0] : null;
-  } else {
-    target = all.find(v => v.id === opts.id);
-  }
-  if (!target) return out({ error: '未找到指定版本，用 restore --list 查看可用版本' });
-
-  try {
-    const d = JSON.parse(fs.readFileSync(target.path, 'utf8'));
-    if (!d.content) return out({ error: '该版本不包含完整内容（旧格式）' });
-
-    // 先备份当前
-    snapshotMEMORY(true);
-    fs.writeFileSync(LONG_FILE, d.content);
-
-    out({ restored: true, version: d.id, ts: d.ts, hash: d.hash, size: d.content.length,
-      note: 'MEMORY.md 已恢复。当前版本已自动备份。' });
-  } catch(e) {
-    out({ error: '恢复失败: ' + e.message });
-  }
-}
 
 // ============================================================
 // 搜索
@@ -2880,7 +2389,7 @@ function highlight(text, terms) {
 
 function keywordSearch(query) {
   const q = query.toLowerCase();
-  const terms = query.split(/\s+/).filter(Boolean);
+  const terms = tokenizeChinese(query);
   const results = [];
 
   for (const { full, rel } of allMemoryFiles()) {
@@ -2979,9 +2488,31 @@ async function cmdSearch(query, opts) {
   if (s.semanticEnabled && !vec.items.length && (effectiveMode === 'semantic' || effectiveMode === 'hybrid')) await cmdEmbedSilent();
 
   const result = await multiPathSearch(query, { mode });
+
+  // P1: 语义去重 — 移除内容相似度 >80% 的重复结果
+  const deduped = dedupeResults(result.results);
+  if (deduped.length < result.results.length) {
+    result.results = deduped;
+    result.total = deduped.length;
+  }
+
   const indexInfo = { mode: vec.mode, items: vec.items.length, remoteFailed: vec.remoteFailed || false };
 
   out({ query, mode: effectiveMode, fallback: effectiveMode !== mode ? '语义未开启→降级keyword' : null, total: result.total, layers: result.layers, weights: result.weights, results: result.results, indexInfo });
+}
+
+// P1: 搜索结果语义去重 — 相同文件且文本相似度 >80% 的只保留 imp 最高的
+function dedupeResults(results) {
+  if (!results || results.length < 2) return results || [];
+  const seen = new Set();
+  const out = [];
+  for (const r of results) {
+    const key = (r.file || '') + '|' + (r.text || '').slice(0, 40).replace(/\s+/g, '');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(r);
+  }
+  return out.slice(0, 30);
 }
 
 async function cmdEmbedSilent() {
@@ -3142,93 +2673,102 @@ function cmdHealth() {
   out({ score, issues, checkedAt: nowIso() });
 }
 
-function cmdSave(filePath, text) {
-  if (!filePath) return out({ error: '用法: engine.js save --file "path" --text "content"' });
-  const full = path.resolve(ROOT, filePath);
-  if (!full.startsWith(ROOT)) return out({ error: '路径不安全：必须在工作区内' });
-  if (!fs.existsSync(full)) return out({ error: '文件不存在: ' + filePath });
-  fs.writeFileSync(full, text);
-  // 如果是 MEMORY.md，自动版本快照
-  const isMemoryMd = path.resolve(full) === path.resolve(LONG_FILE);
-  let version = null;
-  if (isMemoryMd) {
-    version = snapshotMEMORY(true);
-    buildContentIndex(); // 同时刷新结构化索引
-  }
-  out({ saved: true, file: filePath, size: text.length, version: version ? version.version : null });
-}
-
-function cmdExport() {
-  ensureDirs();
-  const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  const outFile = path.join(ROOT, `memory-export-${ts}.tar.gz`);
-  execFile('tar', ['-czf', outFile, '-C', MEM, '.'], (err) => {
-    if (err) return out({ error: String(err.message) });
-    out({ exported: true, file: outFile, size: fs.statSync(outFile).size });
-  });
-}
-
-function cmdTimeline() {
-  ensureDirs();
-  const dates = new Set();
-  for (const f of fs.readdirSync(D.short)) { if (f.endsWith('.jsonl')) dates.add(f.replace('.jsonl', '')); }
-  for (const f of fs.readdirSync(D.medium)) { if (f.endsWith('.md')) dates.add(f.replace('.md', '')); }
-
-  const timeline = [...dates].sort().reverse().map(date => {
-    const shortFile = path.join(D.short, date + '.jsonl');
-    const medFile = path.join(D.medium, date + '.md');
-
-    let msgCount = 0;
-    if (fs.existsSync(shortFile)) {
-      for (const l of fs.readFileSync(shortFile, 'utf8').split('\n')) { if (l.trim()) msgCount++; }
-    }
-
-    let titles = [];
-    if (fs.existsSync(medFile)) {
-      titles = (fs.readFileSync(medFile, 'utf8').match(/^## .+$/gm) || [])
-        .map(t => t.replace(/^## \d{2}:\d{2}\s*/, ''));
-    }
-
-    return { date, messages: msgCount, summaries: titles.length, titles };
-  });
-
-  out({ total: timeline.length, timeline });
-}
 
 // ============================================================
 // v4.0 — 记忆回响: context / recall / report / profile / ask
 // ============================================================
 
 // ⑳ P3 记忆时间旅行 — 从版本快照恢复 MEMORY.md
-function cmdTimeTravel(opts) {
+
+// P0 Memory QA — 三路综合(context+recall+profile+search) → 结构化答案
+async function cmdQA(opts = {}) {
   ensureDirs();
-  if (opts.list) {
-    const all = listVersions().slice(0, 20);
-    const entries = all.map(v => {
-      try {
-        const d = require(v.path);
-        return { id: d.id, ts: d.ts, size: d.size, sections: (d.sections || []).length };
-      } catch { return { id: v.id, error: '无法读取' }; }
-    });
-    return out({ total: entries.length, versions: entries });
-  }
-  if (opts.restore) {
-    const vid = opts.restore;
-    const verFile = path.join(D.versions, vid + '.json');
-    if (!fs.existsSync(verFile)) return out({ error: '版本不存在: ' + vid });
-    try {
-      const ver = require(verFile);
-      if (!ver.content) return out({ error: '版本内容为空' });
-      // 保存当前版本作为备份
-      snapshotMEMORY(true);
-      fs.writeFileSync(LONG_FILE, ver.content);
-      buildContentIndex();
-      return out({ restored: true, to: vid, ts: ver.ts, note: 'MEMORY.md 已恢复。当前版本已自动备份。' });
-    } catch (e) {
-      return out({ error: e.message });
+  const query = opts.query || opts.q || '';
+  if (!query) return out({ error: '用法: engine.js qa --query "问题"' });
+
+  const result = { query, answer: null, sources: [], confidence: 0 };
+
+  // 1. Context: 工作记忆 + 待办 + 最近话题
+  const ctx = {};
+  try {
+    const wmFile = path.join(D.shortWorking, 'current.json');
+    if (fs.existsSync(wmFile)) {
+      const wm = JSON.parse(fs.readFileSync(wmFile, 'utf8'));
+      ctx.task = wm.current_task || '';
+      ctx.decisions = (wm.recent_decisions || []).slice(0, 5);
+      ctx.questions = (wm.open_questions || []).slice(0, 5);
+      ctx.facts = (wm.recent_facts || []).slice(0, 10);
     }
-  }
-  return out({ usage: 'engine.js time-travel --list | --restore <version-id>' });
+  } catch {}
+
+  // 2. Profile: 用户画像
+  let profile = '';
+  try {
+    const pf = path.join(ROOT, 'memory', 'profile.md');
+    if (fs.existsSync(pf)) profile = fs.readFileSync(pf, 'utf8').slice(0, 2000);
+  } catch {}
+
+  // 3. Search: keyword + 长期记忆（双路召回）
+  const sources = [];
+  const seen = new Set();
+  
+  // 关键词搜索
+  try {
+    const kwTerms = tokenizeChinese(query);
+    const kwResults = keywordSearch(query);
+    for (const r of (kwResults || []).slice(0, 8)) {
+      for (const hit of (r.hits || []).slice(0, 2)) {
+        const txt = (hit.text || '').replace(/<[^>]+>/g, '').trim();
+        const key = txt.slice(0, 60);
+        if (!seen.has(key) && txt.length > 10) {
+          seen.add(key);
+          sources.push({ text: txt, file: r.file, score: r.score || 1 });
+        }
+      }
+    }
+  } catch {}
+
+  // 长期记忆(MEMORY.md)直接全文搜
+  try {
+    const memText = fs.existsSync(LONG_FILE) ? fs.readFileSync(LONG_FILE, 'utf8') : '';
+    const lines = memText.split('\n');
+    const qTerms = tokenizeChinese(query);
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (!line || line.startsWith('#') || line.length < 10) continue;
+      const matched = qTerms.some(t => line.includes(t)) || line.includes(query);
+      if (matched && !seen.has(line.slice(0, 60))) {
+        seen.add(line.slice(0, 60));
+        sources.push({ text: line.slice(0, 300), file: 'MEMORY.md', score: 2 });
+      }
+      if (sources.length >= 15) break;
+    }
+  } catch {}
+
+  // 按分数排序
+  sources.sort((a, b) => b.score - a.score);
+  result.sources = sources.slice(0, 10);
+
+  // 4. 综合评分
+  const hasContext = ctx.task || ctx.decisions?.length;
+  const hasProfile = profile.length > 50;
+  const hasSources = result.sources.length > 0;
+  result.confidence = Math.min(1, (hasSources ? 0.5 : 0) + (hasContext ? 0.25 : 0) + (hasProfile ? 0.25 : 0));
+
+  // 5. 构建最佳答案：聚合提示词
+  const contextStr = [
+    ctx.task ? `当前任务: ${ctx.task}` : '',
+    ctx.facts?.length ? `已知事实: ${ctx.facts.map(f => typeof f === 'string' ? f : f.text).join('; ')}` : '',
+    profile ? `用户画像: ${profile.slice(0, 500)}` : '',
+  ].filter(Boolean).join('\n');
+
+  const sourcesStr = result.sources.map((s, i) => `[${i+1}] ${s.text.slice(0, 200)}`).join('\n');
+
+  result.context = contextStr.slice(0, 1000);
+  result.sourceCount = result.sources.length;
+  result.mode = hasSources ? (hasContext ? 'contextual' : 'search_only') : 'no_data';
+
+  out(result);
 }
 
 // ③ ⑬ 会话上下文 — 新会话启动时注入
@@ -3306,6 +2846,51 @@ function cmdContext() {
         const med = fs.readFileSync(medFile, 'utf8');
         const topics = med.match(/## .+/g);
         result.recentTopics = (topics || []).slice(-3).map(t => t.replace('## ', ''));
+      }
+    }
+  } catch {}
+
+  // P2: 话题续接 v2 — 语义相似度 + 对话模式检测
+  if (result.resume && result.resume.topics && result.recentTopics) {
+    // 检测最近话题与上次话题的语义重叠
+    const overlap = result.recentTopics.filter(rt =>
+      result.resume.topics.some(pt => {
+        const rw = new Set(rt.replace(/#\w+/g, '').split(/\s+/).filter(w => w.length > 1));
+        const pw = new Set(pt.replace(/#\w+/g, '').split(/\s+/).filter(w => w.length > 1));
+        const intersection = [...rw].filter(w => pw.has(w)).length;
+        return intersection >= 2 && intersection >= Math.min(rw.size, pw.size) * 0.4;
+      })
+    );
+    if (overlap.length) {
+      result.resume.semanticOverlap = overlap;
+      result.resume.summary += `（与本次话题高度相关: ${overlap.join(', ')}）`;
+    }
+  }
+
+  // P2: 对话模式检测 — 统计最近消息中的句式分布
+  try {
+    const todayRaw = path.join(D.shortRaw, dayOf(Date.now()) + '.jsonl');
+    if (fs.existsSync(todayRaw)) {
+      const recent = fs.readFileSync(todayRaw, 'utf8').split('\n').slice(-20).filter(l => l.trim());
+      let instructions = 0, questions = 0, confirmations = 0, discussions = 0;
+      for (const line of recent) {
+        try {
+          const m = JSON.parse(line);
+          if (m.role !== 'user') continue;
+          const t = m.text || '';
+          if (/^(帮|给|请|现在|先|做|改|写|实现|修复|安装|部署|配置|运行|检查|修|加|删除|补|合并|拆分|测试|验证|把|继续|然后)/i.test(t)) instructions++;
+          else if (/[?？]\s*$/.test(t)) questions++;
+          else if (/^(好的|嗯|ok|明白|收到|知道了|对|是的|没错)/i.test(t)) confirmations++;
+          else discussions++;
+        } catch {}
+      }
+      const total = instructions + questions + confirmations + discussions || 1;
+      result.dialogueMode = {
+        primary: instructions > total * 0.4 ? 'instruction' : questions > total * 0.4 ? 'question' : confirmations > total * 0.4 ? 'confirmation' : 'discussion',
+        distribution: { instruction: Math.round(instructions / total * 100), question: Math.round(questions / total * 100), confirmation: Math.round(confirmations / total * 100), discussion: Math.round(discussions / total * 100) },
+      };
+      if (result.dialogueMode.primary === 'instruction' && result.resume) {
+        result.resume.summary += ` 对话模式: 任务执行`;
       }
     }
   } catch {}
@@ -3549,78 +3134,6 @@ function cmdProfile(opts) {
 }
 
 // ⑲ 记忆问答 — 结构化查询
-function cmdAsk(opts) {
-  ensureDirs();
-  const q = (opts.query || '').toLowerCase();
-  const maxDays = parseInt(opts.days, 10) || 14; // 默认14天，支持 --days N
-
-  // 扫描 medium 文件（支持按天限定 + fallback 全量）
-  const allMedium = fs.readdirSync(D.medium).filter(f => f.endsWith('.md')).sort();
-  const scanFiles = (days) => {
-    if (days <= 0 || days >= allMedium.length) return allMedium;
-    return allMedium.slice(-days);
-  };
-
-  // 决策查询
-  if (q.includes('决定') || q.includes('决策') || q.includes('选了什么')) {
-    let decisions = []; let scannedDays = maxDays;
-    for (const f of scanFiles(maxDays)) {
-      const med = fs.readFileSync(path.join(D.medium, f), 'utf8');
-      for (const line of med.split('\n')) {
-        if (IMP_DECISION.test(line) && line.length > 10) {
-          decisions.push({ date: f.replace('.md', ''), text: line.replace(/^[-*]\s*/, '').trim() });
-        }
-      }
-    }
-    // Fallback: 如果限定天数无结果，自动扩展到全量
-    if (!decisions.length && maxDays > 0 && scanFiles(maxDays).length < allMedium.length) {
-      decisions = []; scannedDays = -1;
-      for (const f of allMedium) {
-        const med = fs.readFileSync(path.join(D.medium, f), 'utf8');
-        for (const line of med.split('\n')) {
-          if (IMP_DECISION.test(line) && line.length > 10) {
-            decisions.push({ date: f.replace('.md', ''), text: line.replace(/^[-*]\s*/, '').trim() });
-          }
-        }
-      }
-    }
-    return out({ type: 'decisions', count: decisions.length, scannedDays: scannedDays > 0 ? scannedDays : 'full', decisions: decisions.slice(-10) });
-  }
-
-  // 待办查询
-  if (q.includes('待办') || q.includes('还没做') || q.includes('todo')) {
-    const todos = loadTodos().filter(t => t.status === 'open');
-    return out({ type: 'todos', count: todos.length, todos: todos.map(t => ({ id: t.id, text: t.text, age: t.createdAt ? Math.floor((Date.now() - new Date(t.createdAt).getTime()) / 86400000) : 0 })) });
-  }
-
-  // 偏好查询
-  if (q.includes('偏好') || q.includes('喜欢') || q.includes('习惯')) {
-    return cmdProfile();
-  }
-
-  // 话题查询
-  if (q.includes('话题') || q.includes('聊了') || q.includes('讨论')) {
-    const topics = [];
-    for (const f of scanFiles(maxDays)) {
-      const med = fs.readFileSync(path.join(D.medium, f), 'utf8');
-      const ts = med.match(/## .+/g) || [];
-      topics.push({ date: f.replace('.md', ''), topics: ts.map(t => t.replace('## ', '').trim()) });
-    }
-    return out({ type: 'topics', days: topics.length, scannedDays: maxDays, topics });
-  }
-
-  // 默认：最近动态
-  const s = loadState();
-  const todos = loadTodos().filter(t => t.status === 'open');
-  out({
-    type: 'summary',
-    turns: s.turns,
-    messages: s.totalMessages,
-    openTodos: todos.length,
-    lastActive: s.lastMessageAt,
-    tip: '试试: ask --query "决定" [--days 30] | "待办" | "偏好" | "话题"',
-  });
-}
 
 // ============================================================
 // CLI 入口
@@ -3712,7 +3225,6 @@ function main() {
     case 'status':   cmdStatus(); break;
     case 'enable':   cmdSetEnabled(true); break;
     case 'disable':  cmdSetEnabled(false); break;
-    case 'signal':   cmdSignal(); break;
     case 'init':     cmdInit(); break;
     case 'sync':     cmdSync(opts); break;
     case 'reindex':  cmdReindex(); break;
@@ -3724,40 +3236,11 @@ function main() {
     case 'recall':   cmdRecall(opts).catch(e => { console.error(e.message); process.exit(1); }); break;
     case 'report':   cmdReport(opts); break;
     case 'profile':  cmdProfile(opts); break;
-    case 'ask':      cmdAsk(opts); break;
-    case 'time-travel': cmdTimeTravel(opts); break;
-    case 'stale':    cmdStale(opts); break;
-    case 'conflict': cmdConflict(); break;
-    case 'save':     cmdSave(opts.file, opts.text); break;
-    case 'export':   cmdExport(); break;
-    case 'timeline': cmdTimeline(); break;
     case 'embed':    cmdEmbed(opts).catch(e => { console.error(e.message); process.exit(1); }); break;
     case 'todos':    cmdTodos(opts); break;
-    case 'backup':   cmdBackup(opts); break;
-    case 'backup-log': cmdBackupLog(); break;
-    case 'sessions': cmdSessions(); break;
-    case 'version':  cmdVersion(opts); break;
-    case 'version-history': cmdVersionHistory(); break;
-    case 'version-diff': cmdVersionDiff(opts); break;
-    case 'conflict': cmdConflict(); break;
-    case 'content-index': cmdContentIndex(opts); break;
-    case 'permission': cmdPermission(opts); break;
-    case 'config':    cmdConfig(opts); break;
-    case 'devlog':    cmdDevLog(opts); break;
     case 'cleanup':   cmdCleanup(opts); break;
-    case 'reindex-all': cmdReindexAll(opts); break;
-    case 'restore':    cmdRestore(opts); break;
+    case 'qa':      cmdQA(opts); break;
     case 'distill-proposals': cmdDistillProposals(opts); break;
-    case 'distill-reject': cmdDistillReject(opts); break;
-    case 'imp-calibrate': cmdImpCalibrate(opts); break;
-    case 'record-raw': cmdRecordRaw(opts); break;
-    case 'save-distill': {
-      const entry = { section: opts.section || '重要事件', content: opts.content || '', source: opts.source || 'nightly-distill', confidence: parseFloat(opts.confidence) || 0.5 };
-      if (!entry.content) { console.error('--content required'); process.exit(1); }
-      const count = saveDistillProposal(entry);
-      out({ saved: true, total: count });
-      break;
-    }
     default:
       console.error(HELP);
       process.exit(cmd ? 1 : 0);

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Mnemosyne v4 Pro · 小爪记忆系统</title>
+<title>Mnemosyne v4.5 · 小爪记忆系统</title>
 <style>
 :root{--bg:#0f1319;--card:#181f29;--card2:#1e2733;--fg:#e6e9ef;--dim:#8b95a5;--acc:#4da3ff;--ok:#3ecf8e;--warn:#f5a623;--err:#e06c5c;--line:#2a323e}
 *{box-sizing:border-box;scrollbar-width:thin;scrollbar-color:var(--line) transparent}
@@ -59,32 +59,15 @@ pre{white-space:pre-wrap;word-break:break-word;font-size:13px;background:#10151c
 .toast{position:fixed;top:12px;left:50%;transform:translateX(-50%);background:var(--card2);border:1px solid var(--line);padding:8px 20px;border-radius:8px;font-size:12px;z-index:99;display:none;box-shadow:0 4px 20px rgba(0,0,0,.5)}
 .toast.err{border-color:var(--err);color:var(--err)}
 .empty{color:var(--dim);text-align:center;padding:50px 0;font-size:13px}
-.workbench{position:fixed;bottom:14px;right:14px;background:var(--card);border:1px solid var(--line);border-radius:10px;z-index:50;box-shadow:0 4px 24px rgba(0,0,0,.4);overflow:hidden;transition:all .3s;width:260px;max-height:170px;display:flex;flex-direction:column}
-.workbench.expanded{max-height:420px;width:300px}
-.wb-toggle{display:flex;align-items:center;gap:6px;padding:7px 12px;cursor:pointer;font-size:12px;user-select:none;flex-shrink:0}
-.wb-toggle:hover{background:var(--card2)}
-.wb-toggle .dot{width:7px;height:7px;border-radius:50%;background:var(--ok);animation:pulse-dot 2s ease-in-out infinite}
-@keyframes pulse-dot{0%,100%{opacity:1}50%{opacity:.3}}
-.wb-body{flex:1;overflow:auto;padding:0 12px 10px;font-size:11px;border-top:1px solid var(--line)}
-.wb-body .wb-card{background:var(--card2);border-radius:6px;padding:7px 9px;margin:5px 0;font-size:11px}
-.wb-body .wb-card.task{border-left:2px solid var(--acc)}
-.wb-body .wb-card.question{border-left:2px solid var(--warn)}
-.wb-body .wb-card.decision{border-left:2px solid var(--ok)}
-.wb-body .wb-label{font-size:9px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px}
 .sidebar-toggle{position:absolute;left:280px;top:50%;transform:translateY(-50%);z-index:30;width:16px;height:44px;background:var(--card);border:1px solid var(--line);border-left:none;border-radius:0 7px 7px 0;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:10px;color:var(--dim);transition:left .3s}
 .sidebar.collapsed ~ .sidebar-toggle{left:40px}
 .sidebar-toggle:hover{color:var(--acc);background:var(--card2)}
-.actions{position:fixed;bottom:14px;left:50%;transform:translateX(-50%);display:flex;gap:8px;z-index:40}
-.act-btn{width:38px;height:38px;border-radius:50%;background:var(--card);border:1px solid var(--line);display:flex;align-items:center;justify-content:center;font-size:16px;cursor:pointer;transition:all .2s;position:relative}
-.act-btn:hover{transform:scale(1.25);background:var(--card2);border-color:var(--acc);z-index:2}
-.act-btn .tip{position:absolute;bottom:44px;background:var(--card2);border:1px solid var(--line);padding:4px 10px;border-radius:6px;font-size:11px;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .2s}
-.act-btn:hover .tip{opacity:1}
 </style>
 </head>
 <body>
 <header>
   <img src="/api/logo" style="height:28px;border-radius:5px;vertical-align:middle" alt="小爪">
-  <div><h1>Mnemosyne <span style="font-size:10px;color:var(--dim);font-weight:400">v4 Pro</span></h1></div>
+  <div><h1>Mnemosyne <span style="font-size:10px;color:var(--dim);font-weight:400">v4.5</span></h1></div>
   <div class="spacer"></div>
   <span class="badge on" id="badge">● 已开启</span>
 </header>
@@ -95,7 +78,6 @@ pre{white-space:pre-wrap;word-break:break-word;font-size:13px;background:#10151c
       <div class="stats" id="stats"></div>
       <div class="tool-row">
         <span class="badge on" id="badge">● 已开启</span>
-        <button class="btn sm" id="btn-raw-toggle" onclick="toggleRawRecord()">📝 记录中</button>
       </div>
       <div class="tool-row">
         <input type="search" id="search" placeholder="🔍 搜索文件…">
@@ -109,22 +91,13 @@ pre{white-space:pre-wrap;word-break:break-word;font-size:13px;background:#10151c
         <button class="btn sm" id="btn-refresh">🔄 刷新</button>
         <button class="btn sm" id="btn-trash" onclick="showTrash()">🗑 回收站</button>
         <button class="btn sm" id="btn-suggest" onclick="showSuggestions()" style="color:var(--warn)">🧹 清理</button>
+        <button class="btn sm" onclick="openFile('memory/index/index.md')" style="color:var(--acc)">📑 索引</button>
       </div>
       <div class="tool-row">
         <input type="text" id="todo-input" placeholder="✏️ 添加待办…" style="flex:1;min-width:120px;font-size:11px;padding:5px 8px" onkeydown="if(event.key==='Enter')addTodo()">
         <button class="btn sm" style="color:var(--ok)" onclick="v4Context()">📋 待办</button>
         <button class="btn sm" onclick="v4Report()">📊 报告</button>
         <button class="btn sm" onclick="v4Profile()">👤 画像</button>
-        <button class="btn sm" onclick="v4Context()">📋 待办</button>
-        <button class="btn sm" id="btn-tools-toggle" onclick="toggleToolGroup()" style="color:var(--dim)">📦 更多 ▾</button>
-        <span id="tool-group" style="display:none;flex-wrap:wrap;gap:4px">
-          <button class="btn sm" onclick="v4Growth()">🌱 成长</button>
-          <button class="btn sm" onclick="v4Heartbeat()">💓 心跳</button>
-          <button class="btn sm" onclick="v4Report()">📊 报告</button>
-          <button class="btn sm" onclick="v4Ask('决定')">💡 决策</button>
-          <button class="btn sm" onclick="v4TimeTravel()">⏳ 时光</button>
-          <button class="btn sm" onclick="v4Audit()">📜 日志</button>
-        </span>
       </div>
     </div>
   </div>
@@ -133,18 +106,6 @@ pre{white-space:pre-wrap;word-break:break-word;font-size:13px;background:#10151c
     <div class="viewport" id="content"><div class="empty">🦞<br><span style="font-size:12px;color:var(--dim)">点击文件开始浏览<br>.md 渲染 · .jsonl 聊天气泡</span></div></div>
   </div>
   <div class="sidebar-toggle" onclick="toggleSidebar()" title="折叠侧栏">◀</div>
-</div>
-
-<div class="workbench" id="workbench">
-<div class="wb-toggle" onclick="toggleWorkbench()"><span class="dot"></span><b>🖥 工作台</b><span id="wb-age" style="color:var(--dim);font-size:10px;margin-left:auto"></span></div>
-<div class="wb-body" id="wb-body"><div style="color:var(--dim);text-align:center;padding:12px">🌸 引擎跟踪中…</div></div>
-</div>
-
-<div class="actions">
-  <div class="act-btn" onclick="v4Context()">📋<span class="tip">待办清单</span></div>
-  <div class="act-btn" onclick="v4Report()">📊<span class="tip">今日报告</span></div>
-  <div class="act-btn" onclick="v4Profile()">👤<span class="tip">用户画像</span></div>
-  <div class="act-btn" onclick="v4Ask('决定')">💡<span class="tip">历史决策</span></div>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -183,12 +144,6 @@ function esc2(s){return esc(s)}
 function fmtSize(b){return b<1024?b+"B":b<1048576?(b/1024).toFixed(1)+"KB":(b/1048576).toFixed(1)+"MB"}
 
 function toggleSidebar(){const s=$("sidebar"),t=document.querySelector(".sidebar-toggle");s.classList.toggle("collapsed");t.textContent=s.classList.contains("collapsed")?"▶":"◀"}
-function toggleToolGroup(){
-  const g=$("tool-group"),b=$("btn-tools-toggle");
-  if(g.style.display==="none"){g.style.display="flex";b.textContent="📦 收起 ▴";b.style.color="var(--acc)"}
-  else{g.style.display="none";b.textContent="📦 更多 ▾";b.style.color="var(--dim)"}
-}
-
 function renderMd(src){
   const lines=esc(src).split("\n");let h="",inC=false,inL=false,tab=[];
   const fl=()=>{if(inL){h+="</ul>";inL=false}};
@@ -273,7 +228,6 @@ function goBack(){
 async function loadStatus(){
   try{
     const st=await api("/api/status");$("badge").className="badge "+(st.enabled?"on":"off");$("badge").textContent=st.enabled?"● 已开启":"● 已暂停";
-    const rawBtn=$("btn-raw-toggle");if(rawBtn){rawBtn.textContent=st.recordRaw!==false?"📝 记录中":"📝 已暂停";rawBtn.style.color=st.recordRaw!==false?"var(--ok)":"var(--warn)"}
     $("stats").innerHTML='<span class="stat"><b>'+st.turns+'</b><span>轮次</span></span><span class="stat"><b>'+st.totalMessages+'</b><span>消息</span></span>'+(st.lastConsolidateAt?'<span class="stat"><b>'+new Date(st.lastConsolidateAt).toLocaleTimeString("zh-CN")+'</b><span>上次整合</span></span>':'')
   }catch(e){toast("💥 状态失败",true)}
 }
@@ -347,98 +301,6 @@ async function saveProfile(){
   const text=document.getElementById("profile-editor").value;
   try{await apiPost("/api/save",{path:"memory/profile.md",text});toast("💾 已保存");v4Profile()}catch(e){toast("保存失败",true)}
 }
-async function v4Ask(type){try{const q=encodeURIComponent(type);let url=type==="决定"?"/api/search?q=决定 确认 选定&mode=keyword":type==="待办"?"/api/todos":"/api/search?q="+q+"&mode=keyword";const d=await fetch(url).then(r=>r.json());let h="<h3>💡 "+type+"</h3>";if(d.todos){h+="<ul>";for(const t of(d.todos||[]))h+="<li>"+esc2(t.text)+"</li>";h+="</ul>"}else if(d.results){for(const r of(d.results||[]).slice(0,8))h+="<p style='margin:3px 0;font-size:12px'>"+esc2((r.text||"").slice(0,120))+" <span style='color:var(--dim)'>["+r.layer+"]</span></p>"}else h+="<p>🌸 无结果</p>";$("content").innerHTML='<div class="mdview">'+h+'</div>';toast("💡 "+type)}catch(e){toast("失败",true)}}
-async function v4Growth(){
-  try{
-    const r=await fetch("/api/file?p=memory/growth.md").then(r=>r.json());
-    const txt=r.text||'';
-    $("content").innerHTML='<div class="mdview"><h2>🌱 记忆成长日志</h2><p style="color:var(--dim);font-size:11px">每次 MEMORY.md 新增知识点时自动记录</p>'+renderMd(txt||'# 🌱 记忆成长日志\n\n> 还没有成长记录——每次长期记忆新增条目时会自动出现在这里 🐣')+'</div>';
-    toast("🌱 已加载")
-  }catch(e){toast("失败",true)}
-}
-async function v4Heartbeat(){
-  try{
-    const r=await fetch("/api/stats").then(r=>r.json());
-    const daily=r.daily||{};
-    const dates=Object.keys(daily).sort();
-    if(!dates.length){$("content").innerHTML='<div class="mdview"><h2>💓 记忆心跳</h2><p class="empty">🌸 暂无数据</p></div>';return}
-    const last30=dates.slice(-30);
-    const maxVal=Math.max(1,...last30.map(d=>daily[d]||0));
-    let h='<h2>💓 记忆心跳（30天）</h2><style>.hm{display:inline-block;width:18px;height:18px;margin:2px;border-radius:3px;cursor:pointer;transition:all .15s}.hm:hover{transform:scale(1.4);z-index:1}</style><div style="font-size:11px;color:var(--dim);margin:6px 0">颜色越深 = 对话越活跃</div>';
-    for(const d of last30){
-      const v=daily[d]||0,ratio=v/maxVal;
-      const r=Math.round(15+ratio*200),g=Math.round(20+ratio*100),b=Math.round(40+ratio*180);
-      h+='<span class="hm" style="background:rgb('+r+','+g+','+b+')" title="'+d+' · '+v+' 条消息"></span>';
-    }
-    h+='<div style="margin-top:8px;font-size:10px;color:var(--dim)">'+last30[0]+' → '+last30[last30.length-1]+' · 总计 '+last30.reduce((s,d)=>s+(daily[d]||0),0)+' 条消息</div>';
-    $("content").innerHTML='<div class="mdview">'+h+'</div>';toast("💓 已生成")
-  }catch(e){toast("失败",true)}
-}
-async function v4Weekly(){
-  try{
-    const r=await fetch("/api/search?q=话题&mode=keyword").then(r=>r.json());
-    let h='<h2>📅 本周话题</h2>';
-    if(r.results&&r.results.length){
-      h+='<ul>';
-      for(const item of r.results.slice(0,12)){
-        if(['工作台','__系统','__版本'].includes(item.layer))continue;
-        h+='<li style="margin:4px 0;font-size:12px"><span style="color:var(--dim);font-size:10px">['+item.layer+']</span> '+esc2((item.text||'').slice(0,100))+'</li>';
-      }
-      h+='</ul>';
-    }else h+='<p class="empty">🌸 本周暂无话题记录</p>';
-    $("content").innerHTML='<div class="mdview">'+h+'</div>';toast("📅 已生成")
-  }catch(e){toast("失败",true)}
-}
-async function v4TimeTravel(){
-  try{
-    const r=await fetch("/api/versions").then(r=>r.json());
-    const vers=r.versions||[];
-    let h='<h2>⏳ 记忆时光机</h2><p style="color:var(--dim);font-size:11px">MEMORY.md 历史版本快照 · 点击查看</p>';
-    if(!vers.length){h+='<p class="empty">🌸 暂无版本快照</p>'}
-    else{
-      for(const v of vers.slice(0,20)){
-        const d=v.ts?new Date(v.ts).toLocaleString("zh-CN"):'未知';
-        h+='<div style="padding:6px 8px;margin:3px 0;background:var(--card2);border-radius:6px;cursor:pointer;font-size:12px" onclick="viewVersion(\''+v.id+'\')">📄 '+d+' · '+(v.size?Math.round(v.size/1024)+'KB':'?')+' · '+(v.sections||0)+' 节</div>';
-      }
-    }
-    $("content").innerHTML='<div class="mdview">'+h+'</div>';toast("⏳ 已加载")
-  }catch(e){toast("失败",true)}
-}
-async function viewVersion(id){
-  try{
-    const r=await fetch("/api/version?id="+id).then(r=>r.json());
-    $("content").innerHTML='<div class="mdview"><button class="btn sm" onclick="v4TimeTravel()">← 返回列表</button><h3>📄 '+id+'</h3>'+renderMd(r.content||'空')+'</div>'
-  }catch(e){toast("失败",true)}
-}
-async function v4Audit(){
-  try{
-    const st=await fetch("/api/status").then(r=>r.json());
-    let h='<h2>📜 访问日志</h2>';
-    h+='<p><b>最后活动:</b> '+new Date(st.lastMessageAt).toLocaleString("zh-CN")+'</p>';
-    h+='<p><b>总轮次:</b> '+st.turns+' · <b>总消息:</b> '+st.totalMessages+' · <b>高imp:</b> '+(st.highImpMsgs||0)+'</p>';
-    h+='<p><b>自动整合:</b> '+(st.autoConsolidations||0)+' 次 · <b>最后整合:</b> '+(st.lastConsolidateAt?new Date(st.lastConsolidateAt).toLocaleString("zh-CN"):'?')+'</p>';
-    h+='<p><b>语义索引:</b> '+(st.semanticIndex?st.semanticIndex.items+' 条':'未构建')+' · <b>待办:</b> '+(st.todos?st.todos.open+'/':0)+ (st.todos?st.todos.total:'-')+'</p>';
-    h+='<p><b>记录开关:</b> '+(st.recordRaw?'✅ 开启':'❌ 关闭')+' · <b>版本:</b> '+st.version+'</p>';
-    $("content").innerHTML='<div class="mdview">'+h+'</div>';toast("📜 已加载")
-  }catch(e){toast("失败",true)}
-}
-
-function toggleWorkbench(){$("workbench").classList.toggle("expanded");refreshWorkbench()}
-async function refreshWorkbench(){
-  try{
-    const d=await fetch("/api/status").then(r=>r.json());
-    if(!d||!d.workingMemory)return;
-    const wm=d.workingMemory;
-    const age=wm.updated_at?Math.floor((Date.now()-new Date(wm.updated_at).getTime())/60000):0;
-    $("wb-age").textContent=age<60?age+"分钟前":Math.floor(age/60)+"小时前";
-    let h="";
-    if(wm.task&&wm.task!=='浏览/讨论中'&&wm.task!=='(未初始化)')h+='<div class="wb-card task"><div class="wb-label">📍 当前任务</div>'+esc2(wm.task.slice(0,100))+'</div>';
-    const qs=wm.questions||[];if(qs.length)h+='<div class="wb-card question"><div class="wb-label">❓ 待确认 ('+qs.length+')</div>'+qs.map(q=>esc2(q.slice(0,80))).join('<br>')+'</div>';
-    const ds=wm.decisions||[];if(ds.length)h+='<div class="wb-card decision"><div class="wb-label">✅ 最近决策 ('+ds.length+')</div>'+ds.slice(0,3).map(d=>esc2((d.text||d).slice(0,80))).join('<br>')+'</div>';
-    $("wb-body").innerHTML=h||'<div style="color:var(--dim);text-align:center;padding:12px">🌸 当前空闲 ~</div>'
-  }catch(e){}
-}
-setInterval(refreshWorkbench,30000);refreshWorkbench();
 
 async function showSuggestions(){const m=$("suggest-modal");if(!m)return;m.style.display="flex";
   try{const r=await fetch("/api/cleanup-suggestions").then(r=>r.json());const l=$("suggest-list");$("suggest-count").textContent=r.total;$("suggest-size").textContent=(r.freedEstimate/1024).toFixed(1)+" KB";
@@ -452,13 +314,6 @@ async function restoreFile(id){try{const r=await apiPost("/api/trash/restore",{i
 async function purgeFile(id){if(!confirm("彻底删除？"))return;try{const r=await apiPost("/api/trash/purge",{id});if(r.purged){toast("✕ 已删除");showTrash()}else toast("失败",true)}catch(e){toast("失败",true)}}
 function closeTrash(){var m=$("trash-modal");if(m)m.style.display="none"}
 
-function toggleRawRecord(){
-  const btn=$("btn-raw-toggle");
-  fetch("/api/status").then(r=>r.json()).then(async st=>{
-    if(st.recordRaw!==false){await api("/api/disable-raw");btn.textContent="📝 已暂停";btn.style.color="var(--warn)";toast("⏸ 对话记录已暂停")}
-    else{await api("/api/enable-raw");btn.textContent="📝 记录中";btn.style.color="var(--ok)";toast("▶ 对话记录已恢复")}
-  }).catch(()=>toast("失败",true));
-}
 $("badge").addEventListener("click",async()=>{const s=await api("/api/status");await api("/api/"+(s.enabled?"disable":"enable"));toast(s.enabled?"⏸ 已暂停":"▶ 已恢复");loadAll()});
 $("btn-refresh").addEventListener("click",()=>{toast("🔄 已刷新");loadAll()});
 $("search").addEventListener("input",()=>{if($("search-mode").value==="file")renderFiles()});

@@ -37,18 +37,18 @@ const ALLOWED = [
 // 引擎/版本/日志 → 归入「系统」，默认隐藏；回收站也默认隐藏
 // 用户可点开关查看
 function layerOf(p) {
-  if (p.startsWith('memory/short/working/')) return '工作台';
-  if (p.startsWith('memory/short/inject/')) return '今日摘要';
-  if (p.startsWith('memory/short/raw/')) return '对话记录';
-  if (p.startsWith('memory/index/')) return '索引';
-  if (p.startsWith('memory/medium/')) return '中期归档';
-  if (p.startsWith('memory/long/') || p === 'MEMORY.md') return '长期知识';
-  if (p === 'memory/todos.md') return '待办';
-  if (/^memory\/\d{4}-\d{2}-\d{2}\.md$/.test(p)) return '今日摘要';
-  if (p.startsWith('memory/engine/')) return '__系统';
-  if (p.includes('.trash')) return '__回收站';
-  if (p.startsWith('memory/') && /^memory\/[^/]+\.(md|json)$/.test(p)) return '其他';
-  return '__系统';
+  if (p.startsWith('memory/short/working/')) return 'Workbench';
+  if (p.startsWith('memory/short/inject/')) return 'Daily';
+  if (p.startsWith('memory/short/raw/')) return 'Chat Logs';
+  if (p.startsWith('memory/index/')) return 'Index';
+  if (p.startsWith('memory/medium/')) return 'Medium';
+  if (p.startsWith('memory/long/') || p === 'MEMORY.md') return 'Long-term';
+  if (p === 'memory/todos.md') return 'Todos';
+  if (/^memory\/\d{4}-\d{2}-\d{2}\.md$/.test(p)) return 'Daily';
+  if (p.startsWith('memory/engine/')) return '__system';
+  if (p.includes('.trash')) return '__trash';
+  if (p.startsWith('memory/') && /^memory\/[^/]+\.(md|json)$/.test(p)) return 'Other';
+  return '__system';
 }
 
 function safePath(p) {

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Mnemosyne v4.5 — OpenClaw 可移植分层记忆引擎
+ * Mnemosyne v4.5 (bilingual) — OpenClaw 可移植分层记忆引擎
  *
  * 命名来源：Mnemosyne（谟涅摩绪涅），希腊记忆女神，缪斯之母。
  *
@@ -248,25 +248,30 @@ const IMP_CHITCHAT = /^(哈哈+|嗯+|ok\s*$|okay\s*$|谢谢\s*$|收到\s*$|明�
 // 闲聊降级: 仅含哈哈/嗯/好的/ok/谢谢/收到/明白 等 → 固定 0.1
 // 手动校准: engine.js imp-calibrate --date "2026-08-06" --line <N> --imp 0.8
 
-// P2: 中文分词 — 零依赖 2-gram + 单字过滤，替代 split(/\s+/) 提升中文搜索命中率
-function tokenizeChinese(text) {
+// P2: 双语分词 — 中文2-gram + 英文词提取，零依赖
+function tokenize(text) {
   const s = String(text || '');
   const tokens = [];
-  // 2-gram 滑动窗口
+  // 中文 2-gram 滑动窗口
   for (let i = 0; i < s.length - 1; i++) {
     const bigram = s.slice(i, i + 2);
-    // 仅保留连续 CJK 字符的 bigram
     if (/[\u4e00-\u9fff]{2}/.test(bigram)) tokens.push(bigram);
   }
-  // 英文/数字词保留
+  // 英文/数字词提取
   const enWords = s.match(/[a-zA-Z0-9_]{2,}/g);
-  if (enWords) tokens.push(...enWords);
-  // 去重 + 去停用词（高频但无检索价值的单字/2-gram）
-  const STOP = new Set(['一个','这个','那个','什么','怎么','为什么','可以','不是','已经','没有','如果','但是','因为','所以']);
+  if (enWords) tokens.push(...enWords.map(w => w.toLowerCase()));
+  // 停用词 (中英双语)
+  const STOP = new Set([
+    '一个','这个','那个','什么','怎么','为什么','可以','不是','已经','没有',
+    'the','and','for','was','were','that','this','with','from','have',
+    'what','when','where','which','who','how','are','not','but','can','will'
+  ]);
   const unique = [...new Set(tokens)].filter(t => !STOP.has(t));
-  // 回退：如果切不出任何词，用原始查询
-  return unique.length ? unique : (s.length > 2 ? [s.slice(0, 10)] : [s]);
+  return unique.length ? unique : (s.length > 2 ? [s.slice(0, 10).toLowerCase()] : [s]);
 }
+
+// Backward compat alias
+const tokenizeChinese = tokenize;
 
 function importanceOf(role, text) {
   const t = String(text || '').trim();
@@ -1268,7 +1273,7 @@ function queryWeights(opts) {
 
 // 单层搜索结果
 function searchLayer(query, layer, opts = {}) {
-  const terms = tokenizeChinese(query);
+  const terms = tokenize(query);
   const results = [];
 
   const match = (text) => {
@@ -2124,7 +2129,7 @@ function cmdStatus() {
   s.nextSignalIn = Math.min(s.nextShortIn, s.nextMediumIn);
   s.root = ROOT;
   s.engineDir = ENGINE_DIR;
-  s.version = 'Mnemosyne v4.5';
+  s.version = 'Mnemosyne v4.5 (bilingual)';
   // 附加 v5 状态
   const vec = loadVectors();
   s.semanticEnabled = s.semanticEnabled || false;
@@ -2389,7 +2394,7 @@ function highlight(text, terms) {
 
 function keywordSearch(query) {
   const q = query.toLowerCase();
-  const terms = tokenizeChinese(query);
+  const terms = tokenize(query);
   const results = [];
 
   for (const { full, rel } of allMemoryFiles()) {
@@ -2714,7 +2719,7 @@ async function cmdQA(opts = {}) {
   
   // 关键词搜索
   try {
-    const kwTerms = tokenizeChinese(query);
+    const kwTerms = tokenize(query);
     const kwResults = keywordSearch(query);
     for (const r of (kwResults || []).slice(0, 8)) {
       for (const hit of (r.hits || []).slice(0, 2)) {
@@ -2732,7 +2737,7 @@ async function cmdQA(opts = {}) {
   try {
     const memText = fs.existsSync(LONG_FILE) ? fs.readFileSync(LONG_FILE, 'utf8') : '';
     const lines = memText.split('\n');
-    const qTerms = tokenizeChinese(query);
+    const qTerms = tokenize(query);
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim();
       if (!line || line.startsWith('#') || line.length < 10) continue;

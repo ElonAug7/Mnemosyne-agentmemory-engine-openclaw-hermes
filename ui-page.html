@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Mnemosyne v4.5 · 小爪记忆系统</title>
+<title>Mnemosyne v4.5 · Xiaozhao Memory</title>
 <style>
 :root{--bg:#0f1319;--card:#181f29;--card2:#1e2733;--fg:#e6e9ef;--dim:#8b95a5;--acc:#4da3ff;--ok:#3ecf8e;--warn:#f5a623;--err:#e06c5c;--line:#2a323e}
 *{box-sizing:border-box;scrollbar-width:thin;scrollbar-color:var(--line) transparent}
@@ -35,11 +35,11 @@ input:focus{border-color:var(--acc)}
 .fileitem.active{background:#253347;color:var(--acc)}
 .fileitem .meta{color:var(--dim);font-size:10px;margin-left:auto;flex-shrink:0}
 .layer-tag{font-size:9px;padding:1px 5px;border-radius:4px;flex-shrink:0}
-.layer-tag.工作台{background:#3a1e4a;color:#ce93d8}.layer-tag.今日摘要{background:#1e3a4a;color:#4fc3f7}
-.layer-tag.对话记录{background:#2a2a3a;color:#90a4ae}.layer-tag.索引{background:#2d2a4a;color:#b39ddb}
-.layer-tag.中期归档{background:#3a2e1e;color:#ffb74d}.layer-tag.长期知识{background:#1e3a2a;color:#81c784}
-.layer-tag.系统{background:#333;color:#ff8a65}.layer-tag.回收站{background:#4a1e1e;color:#ef9a9a}
-.layer-tag.待办{background:#2e3a1e;color:#ffd54f}.layer-tag.其他{background:#333;color:#999}
+.layer-tag.Workbench{background:#3a1e4a;color:#ce93d8}.layer-tag.Daily{background:#1e3a4a;color:#4fc3f7}
+.layer-tag.Chat Logs{background:#2a2a3a;color:#90a4ae}.layer-tag.Index{background:#2d2a4a;color:#b39ddb}
+.layer-tag.Medium{background:#3a2e1e;color:#ffb74d}.layer-tag.Long-term{background:#1e3a2a;color:#81c784}
+.layer-tag.system{background:#333;color:#ff8a65}.layer-tag.Trash{background:#4a1e1e;color:#ef9a9a}
+.layer-tag.Todos{background:#2e3a1e;color:#ffd54f}.layer-tag.Other{background:#333;color:#999}
 .filter-row{display:flex;gap:4px;margin:5px 0;flex-wrap:wrap}
 .filter-btn{font-size:10px;padding:2px 9px;border-radius:12px;border:1px solid var(--line);background:var(--card2);color:var(--dim);cursor:pointer;transition:all .15s}
 .filter-btn.on{background:var(--acc);color:#fff;border-color:var(--acc)}
@@ -69,7 +69,7 @@ pre{white-space:pre-wrap;word-break:break-word;font-size:13px;background:#10151c
   <img src="/api/logo" style="height:28px;border-radius:5px;vertical-align:middle" alt="小爪">
   <div><h1>Mnemosyne <span style="font-size:10px;color:var(--dim);font-weight:400">v4.5</span></h1></div>
   <div class="spacer"></div>
-  <span class="badge on" id="badge">● 已开启</span>
+  <span class="badge on" id="badge">● Active</span>
 </header>
 
 <div class="main">
@@ -77,63 +77,63 @@ pre{white-space:pre-wrap;word-break:break-word;font-size:13px;background:#10151c
     <div class="side-inner">
       <div class="stats" id="stats"></div>
       <div class="tool-row">
-        <span class="badge on" id="badge">● 已开启</span>
+        <span class="badge on" id="badge">● Active</span>
       </div>
       <div class="tool-row">
-        <input type="search" id="search" placeholder="🔍 搜索文件…">
+        <input type="search" id="search" placeholder="🔍 Search files...">
         <select id="search-mode" style="background:var(--card2);color:var(--fg);border:1px solid var(--line);border-radius:7px;padding:5px 8px;font-size:11px">
-          <option value="file">📁 文件</option><option value="hybrid">🧠 内容</option>
+          <option value="file">📁 Files</option><option value="hybrid">🧠 Content</option>
         </select>
       </div>
       <div class="filter-row" id="layer-filter"></div>
       <div class="filelist" id="files"></div>
       <div class="tool-row" style="margin-top:5px;padding-top:6px;border-top:1px solid var(--line)">
-        <button class="btn sm" id="btn-refresh">🔄 刷新</button>
-        <button class="btn sm" id="btn-trash" onclick="showTrash()">🗑 回收站</button>
-        <button class="btn sm" id="btn-suggest" onclick="showSuggestions()" style="color:var(--warn)">🧹 清理</button>
-        <button class="btn sm" onclick="openFile('memory/index/index.md')" style="color:var(--acc)">📑 索引</button>
+        <button class="btn sm" id="btn-refresh">🔄 Refresh</button>
+        <button class="btn sm" id="btn-trash" onclick="showTrash()">🗑 Trash</button>
+        <button class="btn sm" id="btn-suggest" onclick="showSuggestions()" style="color:var(--warn)">🧹 Clean</button>
+        <button class="btn sm" onclick="openFile('memory/index/index.md')" style="color:var(--acc)">📑 Index</button>
       </div>
       <div class="tool-row">
-        <input type="text" id="todo-input" placeholder="✏️ 添加待办…" style="flex:1;min-width:120px;font-size:11px;padding:5px 8px" onkeydown="if(event.key==='Enter')addTodo()">
-        <button class="btn sm" style="color:var(--ok)" onclick="v4Context()">📋 待办</button>
-        <button class="btn sm" onclick="v4Report()">📊 报告</button>
-        <button class="btn sm" onclick="v4Profile()">👤 画像</button>
+        <input type="text" id="todo-input" placeholder="✏️ Add todo..." style="flex:1;min-width:120px;font-size:11px;padding:5px 8px" onkeydown="if(event.key==='Enter')addTodo()">
+        <button class="btn sm" style="color:var(--ok)" onclick="v4Context()">📋 Todos</button>
+        <button class="btn sm" onclick="v4Report()">📊 Report</button>
+        <button class="btn sm" onclick="v4Profile()">👤 Profile</button>
       </div>
     </div>
   </div>
   <div class="content-area">
-    <div class="crumb" id="crumb"><span style="opacity:.6">✨ 从左侧选择文件查看 ~</span></div>
-    <div class="viewport" id="content"><div class="empty">🦞<br><span style="font-size:12px;color:var(--dim)">点击文件开始浏览<br>.md 渲染 · .jsonl 聊天气泡</span></div></div>
+    <div class="crumb" id="crumb"><span style="opacity:.6">✨ Select a file from the sidebar ~</span></div>
+    <div class="viewport" id="content"><div class="empty">🦞<br><span style="font-size:12px;color:var(--dim)">Click a file to browse<br>.md rendered · .jsonl chat bubbles</span></div></div>
   </div>
-  <div class="sidebar-toggle" onclick="toggleSidebar()" title="折叠侧栏">◀</div>
+  <div class="sidebar-toggle" onclick="toggleSidebar()" title="Toggle Sidebar">◀</div>
 </div>
 
 <div class="toast" id="toast"></div>
 
 <div id="suggest-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.85);z-index:1000;align-items:center;justify-content:center" onclick="if(event.target===this)this.style.display='none'">
 <div style="background:var(--card);border-radius:12px;padding:20px;max-width:640px;width:90%;max-height:80vh;overflow:auto" onclick="event.stopPropagation()">
-<h3>🧹 建议清理</h3><div style="font-size:11px;color:var(--dim);margin-bottom:8px">共计 <b id="suggest-count">-</b> 项 · 可释放 <b id="suggest-size">-</b></div>
+<h3>🧹 Suggested Cleanup</h3><div style="font-size:11px;color:var(--dim);margin-bottom:8px">Total <b id="suggest-count">-</b> items · frees <b id="suggest-size">-</b></div>
 <div id="suggest-list"></div>
-<div style="margin-top:10px;display:flex;gap:8px"><button class="btn" onclick="document.getElementById('suggest-modal').style.display='none'">关闭</button><button class="btn" style="color:var(--ok)" onclick="deleteAllSuggested()">全部清理</button></div></div></div>
+<div style="margin-top:10px;display:flex;gap:8px"><button class="btn" onclick="document.getElementById('suggest-modal').style.display='none'">Close</button><button class="btn" style="color:var(--ok)" onclick="deleteAllSuggested()">Clean All</button></div></div></div>
 
 <div id="trash-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.85);z-index:1000;align-items:center;justify-content:center" onclick="if(event.target===this)closeTrash()">
 <div style="background:var(--card);border-radius:12px;padding:20px;max-width:640px;width:90%;max-height:80vh;overflow:auto" onclick="event.stopPropagation()">
-<h3>🗑 回收站 <span style="font-size:11px;color:var(--dim)">· 保留15天</span></h3>
+<h3>🗑 Trash <span style="font-size:11px;color:var(--dim)">· kept 15 days</span></h3>
 <div id="trash-list"></div>
-<div style="margin-top:10px;display:flex;gap:8px"><button class="btn" onclick="closeTrash()">关闭</button><button class="btn" style="color:var(--err)" onclick="if(confirm('确定清空？')){fetch('/api/trash').then(r=>r.json()).then(d=>{if(d.items)d.items.forEach(i=>apiPost('/api/trash/purge',{id:i.trashId}));toast('已清空');showTrash()})}">清空</button></div></div></div>
+<div style="margin-top:10px;display:flex;gap:8px"><button class="btn" onclick="closeTrash()">Close</button><button class="btn" style="color:var(--err)" onclick="if(confirm('ConfirmClear？')){fetch('/api/trash').then(r=>r.json()).then(d=>{if(d.items)d.items.forEach(i=>apiPost('/api/trash/purge',{id:i.trashId}));toast('cleared');showTrash()})}">Clear</button></div></div></div>
 
 <div style="position:fixed;bottom:4px;right:16px;font-size:8px;color:var(--dim);opacity:.3;z-index:1">🦞 v4 Pro · POST+CSRF</div>
 
 <script>
 "use strict";
 window.addEventListener("error", e => toast("💥 "+(e.message||e.type), true));
-window.addEventListener("unhandledrejection", e => toast("💥 请求失败", true));
+window.addEventListener("unhandledrejection", e => toast("💥 Request Failed", true));
 
 const $ = id => document.getElementById(id);
 let cur=null,curRaw="",viewMode="preview",allFiles=[],layerFilter=null;
 let prevContent=null,prevCur=null;
-const VISIBLE=['工作台','今日摘要','对话记录','索引','中期归档','长期知识','待办','其他'];
-const SYSTEM=['__系统','__版本','__回收站'];
+const VISIBLE=['Workbench','Daily','Chat Logs','Index','Medium','Long-term','Todos','Other'];
+const SYSTEM=['__system','__version','__trash'];
 
 function toast(m,err){const t=$("toast");t.textContent=m;t.className="toast"+(err?" err":"");t.style.display="block";clearTimeout(t._t);t._t=setTimeout(()=>t.style.display="none",3000)}
 
@@ -173,13 +173,13 @@ function renderJsonl(src){
 function renderLayerFilter(){
   const b=$("layer-filter");b.innerHTML="";
   const mk=(l,v)=>{const x=document.createElement("button");x.className="filter-btn"+(layerFilter===v?" on":"");x.textContent=l;x.addEventListener("click",()=>{layerFilter=v;renderLayerFilter();renderFiles()});b.appendChild(x)}
-  mk("全部",null);for(const l of VISIBLE)if(allFiles.some(f=>f.layer===l))mk(l,l)
+  mk("All",null);for(const l of VISIBLE)if(allFiles.some(f=>f.layer===l))mk(l,l)
 }
 function renderFiles(){
   const q=$("search").value.trim().toLowerCase(),b=$("files");b.innerHTML="";
   if($("search-mode").value!=="file")return;
   const list=allFiles.filter(f=>(!q||f.path.toLowerCase().includes(q))&&(!layerFilter||f.layer===layerFilter));
-  if(!list.length){b.innerHTML='<div class="empty">🌸 无匹配</div>';return}
+  if(!list.length){b.innerHTML='<div class="empty">🌸 No matches</div>';return}
   for(const f of list){
     const d=document.createElement("div");d.className="fileitem"+(f.path===cur?" active":"");
     const tag=document.createElement("span");tag.className="layer-tag "+f.layer;tag.textContent=f.layer;
@@ -190,29 +190,29 @@ function renderFiles(){
   }
 }
 async function deleteFile(p){
-  if(!confirm("移入回收站？"))return;
-  try{const r=await apiPost("/api/delete",{p});if(r.trashed){toast("🗑 已删除");allFiles=await api("/api/files");if(cur===p){cur=null;$("crumb").innerHTML="";$("content").innerHTML='<div class="empty">已删除</div>'}renderFiles()}else toast("失败",true)}
-  catch(e){toast("失败",true)}
+  if(!confirm("Move to trash?"))return;
+  try{const r=await apiPost("/api/delete",{p});if(r.trashed){toast("🗑 Deleted");allFiles=await api("/api/files");if(cur===p){cur=null;$("crumb").innerHTML="";$("content").innerHTML='<div class="empty">Deleted</div>'}renderFiles()}else toast("Failed",true)}
+  catch(e){toast("Failed",true)}
 }
 
 async function openFile(p){
   if($("content").innerHTML&&!$("content").innerHTML.includes('class="empty"')){prevContent=$("content").innerHTML;prevCur=cur}
   cur=p;
   try{
-    const d=await api("/api/file?p="+encodeURIComponent(p));if(!d||!d.text){toast("📄 空文件",true);return}
+    const d=await api("/api/file?p="+encodeURIComponent(p));if(!d||!d.text){toast("📄 Empty",true);return}
     curRaw=d.text;viewMode=p.endsWith(".md")?"preview":"raw";renderContent(p,d);renderFiles()
   }catch(e){toast("💥 "+e.message,true)}
 }
 function renderContent(p,d){
   const when=d&&d.mtime?new Date(d.mtime).toLocaleString("zh-CN"):"";
   $("crumb").innerHTML="";
-  const back=document.createElement("button");back.className="btn sm";back.textContent="← 返回";back.addEventListener("click",goBack);
-  const dl=document.createElement("button");dl.className="btn sm";dl.textContent="⬇ 下载";dl.addEventListener("click",()=>{location.href="/api/download?p="+encodeURIComponent(p)});
-  const del=document.createElement("button");del.className="btn sm";del.textContent="🗑 删除";del.style.color="var(--err)";del.addEventListener("click",()=>deleteFile(p));
+  const back=document.createElement("button");back.className="btn sm";back.textContent="← Back";back.addEventListener("click",goBack);
+  const dl=document.createElement("button");dl.className="btn sm";dl.textContent="⬇ Download";dl.addEventListener("click",()=>{location.href="/api/download?p="+encodeURIComponent(p)});
+  const del=document.createElement("button");del.className="btn sm";del.textContent="🗑 Delete";del.style.color="var(--err)";del.addEventListener("click",()=>deleteFile(p));
   $("crumb").appendChild(back);$("crumb").appendChild(dl);$("crumb").appendChild(del);
-  if(p.endsWith(".md")){const tog=document.createElement("button");tog.className="btn sm";tog.textContent=viewMode==="preview"?"原文":"渲染";tog.addEventListener("click",()=>{viewMode=viewMode==="preview"?"raw":"preview";renderContent(p,d)});$("crumb").appendChild(tog)}
+  if(p.endsWith(".md")){const tog=document.createElement("button");tog.className="btn sm";tog.textContent=viewMode==="preview"?"Raw":"Render";tog.addEventListener("click",()=>{viewMode=viewMode==="preview"?"raw":"preview";renderContent(p,d)});$("crumb").appendChild(tog)}
   const info=document.createElement("span");info.textContent=p+(d?" · "+fmtSize(d.size)+" · "+when:"");$("crumb").appendChild(info);
-  const box=$("content");if(!d){box.innerHTML='<div class="empty">← 选择文件</div>';return}
+  const box=$("content");if(!d){box.innerHTML='<div class="empty">← Select file</div>';return}
   if(viewMode==="raw"){box.innerHTML="";const pre=document.createElement("pre");pre.textContent=d.text;box.appendChild(pre);return}
   const div=document.createElement("div");
   if(p.endsWith(".jsonl")){div.className="mdview";div.innerHTML=renderJsonl(d.text)}
@@ -222,14 +222,14 @@ function renderContent(p,d){
 }
 function goBack(){
   if(prevContent){$("content").innerHTML=prevContent;prevContent=null;cur=prevCur;renderFiles();return}
-  cur=null;curRaw="";$("crumb").innerHTML='<span style="opacity:.6">✨ 从左侧选择文件查看 ~</span>';$("content").innerHTML='<div class="empty">🦞<br><span style="font-size:12px;color:var(--dim)">点击文件开始浏览</span></div>';renderFiles()
+  cur=null;curRaw="";$("crumb").innerHTML='<span style="opacity:.6">✨ Select a file from the sidebar ~</span>';$("content").innerHTML='<div class="empty">🦞<br><span style="font-size:12px;color:var(--dim)">Click a file to browse</span></div>';renderFiles()
 }
 
 async function loadStatus(){
   try{
-    const st=await api("/api/status");$("badge").className="badge "+(st.enabled?"on":"off");$("badge").textContent=st.enabled?"● 已开启":"● 已暂停";
-    $("stats").innerHTML='<span class="stat"><b>'+st.turns+'</b><span>轮次</span></span><span class="stat"><b>'+st.totalMessages+'</b><span>消息</span></span>'+(st.lastConsolidateAt?'<span class="stat"><b>'+new Date(st.lastConsolidateAt).toLocaleTimeString("zh-CN")+'</b><span>上次整合</span></span>':'')
-  }catch(e){toast("💥 状态失败",true)}
+    const st=await api("/api/status");$("badge").className="badge "+(st.enabled?"on":"off");$("badge").textContent=st.enabled?"● Active":"● Paused";
+    $("stats").innerHTML='<span class="stat"><b>'+st.turns+'</b><span>turns</span></span><span class="stat"><b>'+st.totalMessages+'</b> <span>msgs</span></span>'+(st.lastConsolidateAt?'<span class="stat"><b>'+new Date(st.lastConsolidateAt).toLocaleTimeString("zh-CN")+'</b><span><span>last cons.</span></span></span>':'')
+  }catch(e){toast("💥 Status Failed",true)}
 }
 async function loadFiles(){
   try{
@@ -237,7 +237,7 @@ async function loadFiles(){
     if(cur&&cur.includes('.')){
       try{const d=await api("/api/file?p="+encodeURIComponent(cur));if(d&&d.text&&d.text!==curRaw){curRaw=d.text;renderContent(cur,d)}}catch(e){cur=null}
     }
-  }catch(e){toast("💥 文件失败",true)}
+  }catch(e){toast("💥 File Failed",true)}
 }
 async function loadAll(){await Promise.all([loadStatus(),loadFiles()])}
 
@@ -246,11 +246,11 @@ async function contentSearch(q,mode){
   try{
     const r=await fetch("/api/search?q="+encodeURIComponent(q)+"&mode="+mode).then(r=>r.json());if(r.error){toast(r.error,true);return}
     let h="<style>@keyframes pulse{0%,100%{background:rgba(77,163,255,.3)}50%{background:rgba(77,163,255,.6)}}.hl{background:rgba(77,163,255,.35);border-radius:3px;padding:1px 2px;animation:pulse 1.8s ease-in-out infinite}</style>";
-    h+="<h3>🔍 "+esc2(q)+" <span style='color:var(--dim);font-size:12px'>("+r.total+" 条)</span></h3>";
-    if(!r.results||!r.results.length){h+="<p class='empty'>🌸 无结果</p>"}
+    h+="<h3>🔍 "+esc2(q)+" <span style='color:var(--dim);font-size:12px'>("+r.total+" items)</span></h3>";
+    if(!r.results||!r.results.length){h+="<p class='empty'>🌸 No results</p>"}
     else{
       for(const item of r.results.slice(0,20)){
-        if(['工作台','__系统','__版本','__回收站'].includes(item.layer))continue;
+        if(['Workbench','__system','__version','__trash'].includes(item.layer))continue;
         const file=item.file||"";if(file.includes('/engine/')||file.includes('/working/')||file.includes('/versions/'))continue;
         const line=item.line||0,text=(item.text||"").slice(0,250);
         const hl=text.replace(new RegExp("("+q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+")","gi"),'<span class="hl">$1</span>');
@@ -258,68 +258,68 @@ async function contentSearch(q,mode){
       }
     }
     $("content").innerHTML='<div class="mdview">'+h+'</div>'
-  }catch(e){toast("💥 搜索失败",true)}
+  }catch(e){toast("💥 Search Failed",true)}
 }
 async function openSearchResult(file,line,query){
-  let p=decodeURIComponent(file);if(!p){toast("无效路径",true);return}
+  let p=decodeURIComponent(file);if(!p){toast("Invalid path",true);return}
   if(!p.startsWith('memory/')&&!p.startsWith('MEMORY'))p='memory/'+p;if(p==='memory/MEMORY.md')p='MEMORY.md';
   if($("content").innerHTML&&!$("content").innerHTML.includes('class="empty"')){prevContent=$("content").innerHTML;prevCur=cur}
   cur=p;
   try{
-    const d=await api("/api/file?p="+encodeURIComponent(p));if(!d||!d.text){toast("空文件",true);return}
+    const d=await api("/api/file?p="+encodeURIComponent(p));if(!d||!d.text){toast("Empty file",true);return}
     curRaw=d.text;const lines=d.text.split('\n'),q=decodeURIComponent(query),tl=Math.max(0,(line||1)-1),st=Math.max(0,tl-5),en=Math.min(lines.length,tl+5);
     let h="<style>@keyframes p2{0%,100%{background:rgba(245,166,35,.25)}50%{background:rgba(245,166,35,.55)}}.hl2{background:rgba(245,166,35,.35);border-radius:3px;padding:1px 2px;animation:p2 1.5s ease-in-out infinite}</style>";
-    h+="<div class='crumb'><button class='btn sm' onclick='goBack()'>← 返回</button><span>"+p+" · 行 "+(tl+1)+"</span></div><pre style='font-size:12px;background:#10151c;border-radius:7px;padding:10px;max-height:60vh;overflow:auto'>";
+    h+="<div class='crumb'><button class='btn sm' onclick='goBack()'>← Back</button><span>"+p+" · line "+(tl+1)+"</span></div><pre style='font-size:12px;background:#10151c;border-radius:7px;padding:10px;max-height:60vh;overflow:auto'>";
     for(let i=st;i<en;i++){if(i>=lines.length)break;const lq=i===tl?" style='background:rgba(245,166,35,.15);border-left:3px solid var(--warn);padding-left:8px'":"";const txt=esc2(lines[i]||"");let ht=txt;try{ht=txt.replace(new RegExp("("+q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+")","gi"),'<span class="hl2">$1</span>')}catch(e){}h+="<div"+lq+"><span style='color:var(--dim);margin-right:8px'>"+String(i+1).padStart(4,' ')+"</span>"+ht+"</div>"}
     h+="</pre>";$("content").innerHTML=h;setTimeout(()=>{const t=$("content").querySelectorAll('[style*=\"border-left\"]');if(t.length)t[0].scrollIntoView({behavior:'smooth',block:'center'})},100);renderFiles()
   }catch(e){toast("💥 "+(e.message||e),true)}
 }
 
-async function addTodo(){const inp=$("todo-input");if(!inp||!inp.value.trim())return;try{const r=await apiPost("/api/todos/add",{text:inp.value.trim()});if(r.added){toast("✅ 已添加");inp.value=""}else toast("失败",true)}catch(e){toast("失败",true)}}
-async function doneTodo(id){try{const r=await apiPost("/api/todos/done",{id:String(id)});if(r.done){toast("✅ 完成");v4Context()}else toast("失败",true)}catch(e){toast("失败",true)}}
+async function addTodo(){const inp=$("todo-input");if(!inp||!inp.value.trim())return;try{const r=await apiPost("/api/todos/add",{text:inp.value.trim()});if(r.added){toast("✅ Added");inp.value=""}else toast("Failed",true)}catch(e){toast("Failed",true)}}
+async function doneTodo(id){try{const r=await apiPost("/api/todos/done",{id:String(id)});if(r.done){toast("✅ Done");v4Context()}else toast("Failed",true)}catch(e){toast("Failed",true)}}
 
 async function v4Context(){
-  try{const todos=await api("/api/todos");let h="<h3>📋 待办清单</h3>";if(todos.todos&&todos.todos.length){h+="<ul>";for(const t of todos.todos)h+="<li style='margin:4px 0;display:flex;align-items:center;gap:8px'><span style='flex:1'>"+esc2(t.text)+" <span style='color:var(--dim);font-size:10px'>#"+t.id+"</span></span><button class='btn sm' style='color:var(--ok)' onclick='doneTodo("+t.id+")'>✓</button></li>";h+="</ul>"}else h+="<p style='color:var(--ok)'>✨ 全部完成！</p>";$("content").innerHTML='<div class="mdview">'+h+'</div>';toast("📋 已加载")}catch(e){toast("失败",true)}
+  try{const todos=await api("/api/todos");let h="<h3>📋 Todos</h3>";if(todos.todos&&todos.todos.length){h+="<ul>";for(const t of todos.todos)h+="<li style='margin:4px 0;display:flex;align-items:center;gap:8px'><span style='flex:1'>"+esc2(t.text)+" <span style='color:var(--dim);font-size:10px'>#"+t.id+"</span></span><button class='btn sm' style='color:var(--ok)' onclick='doneTodo("+t.id+")'>✓</button></li>";h+="</ul>"}else h+="<p style='color:var(--ok)'>✨ Alldone！</p>";$("content").innerHTML='<div class="mdview">'+h+'</div>';toast("📋 Loaded")}catch(e){toast("Failed",true)}
 }
-async function v4Report(){try{const d=await api("/api/status"),todos=await api("/api/todos");let h="<h3>📊 今日报告</h3>";h+="<p>🔄 "+d.turns+" 轮 · 💬 "+d.totalMessages+" 条 · ⚡ "+(d.highImpMsgs||0)+" 高imp</p>";h+="<p>🧩 整合 "+(d.autoConsolidations||0)+" 次 · 📋 "+(todos.open||0)+" 项待办</p>";h+="<p>🧠 语义索引 "+(d.semanticIndex?d.semanticIndex.items+" 条":"未构建")+"</p>";$("content").innerHTML='<div class="mdview">'+h+'</div>';toast("📊 已生成")}catch(e){toast("失败",true)}}
+async function v4Report(){try{const d=await api("/api/status"),todos=await api("/api/todos");let h="<h3>📊 Daily Report</h3>";h+="<p>🔄 "+d.turns+" turns · 💬 "+d.totalMessages+" msgs · ⚡ "+(d.highImpMsgs||0)+" high-imp</p>";h+="<p>🧩 consolidations "+(d.autoConsolidations||0)+" consolidations · 📋 "+(todos.open||0)+" todos</p>";h+="<p>🧠 semanticIndex "+(d.semanticIndex?d.semanticIndex.items+" items":"not built")+"</p>";$("content").innerHTML='<div class="mdview">'+h+'</div>';toast("📊 Generated")}catch(e){toast("Failed",true)}}
 async function v4Profile(){
   try{
     const r=await fetch("/api/file?p=memory/profile.md").then(r=>r.json());
     const txt=r.text||'';
-    $("content").innerHTML='<div class="mdview"><div style="display:flex;gap:6px;margin-bottom:8px"><button class="btn sm" id="btn-edit-profile" onclick="editProfile()">✏️ 编辑画像</button><span style="color:var(--dim);font-size:10px;align-self:center">手动修正后保存</span></div>'+renderMd(txt)+'</div>';
+    $("content").innerHTML='<div class="mdview"><div style="display:flex;gap:6px;margin-bottom:8px"><button class="btn sm" id="btn-edit-profile" onclick="editProfile()">✏️ Edit Profile</button><span style="color:var(--dim);font-size:10px;align-self:center">Save after editing</span></div>'+renderMd(txt)+'</div>';
     window._profileText=txt;
-    toast("👤 已加载")
+    toast("👤 Loaded")
   }catch(e){
-    try{const r=await fetch("/api/file?p=MEMORY.md").then(r=>r.json());$("content").innerHTML='<div class="mdview">'+renderMd(r.text)+'</div>'}catch(e2){toast("失败",true)}
+    try{const r=await fetch("/api/file?p=MEMORY.md").then(r=>r.json());$("content").innerHTML='<div class="mdview">'+renderMd(r.text)+'</div>'}catch(e2){toast("Failed",true)}
   }
 }
 async function editProfile(){
   const txt=window._profileText||'';
-  $("content").innerHTML='<div class="mdview"><div style="display:flex;gap:6px;margin-bottom:8px"><button class="btn sm" style="color:var(--ok)" onclick="saveProfile()">💾 保存</button><button class="btn sm" onclick="v4Profile()">✕ 取消</button></div><textarea id="profile-editor" style="width:100%;height:calc(100vh - 200px);background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:12px;font:13px/1.6 monospace;resize:vertical">'+esc2(txt)+'</textarea><p style="color:var(--dim);font-size:10px;margin-top:4px">💡 直接编辑 Markdown 格式。保存后即刻生效，下次 --update 不会覆盖手动修改的内容。</p></div>';
+  $("content").innerHTML='<div class="mdview"><div style="display:flex;gap:6px;margin-bottom:8px"><button class="btn sm" style="color:var(--ok)" onclick="saveProfile()">💾 Save</button><button class="btn sm" onclick="v4Profile()">✕ Cancel</button></div><textarea id="profile-editor" style="width:100%;height:calc(100vh - 200px);background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:12px;font:13px/1.6 monospace;resize:vertical">'+esc2(txt)+'</textarea><p style="color:var(--dim);font-size:10px;margin-top:4px">💡 Edit Markdown directly. Changes take effect immediately. Manual edits are preserved across --update.</p></div>';
 }
 async function saveProfile(){
   const text=document.getElementById("profile-editor").value;
-  try{await apiPost("/api/save",{path:"memory/profile.md",text});toast("💾 已保存");v4Profile()}catch(e){toast("保存失败",true)}
+  try{await apiPost("/api/save",{path:"memory/profile.md",text});toast("💾 Saved");v4Profile()}catch(e){toast("SaveFailed",true)}
 }
 
 async function showSuggestions(){const m=$("suggest-modal");if(!m)return;m.style.display="flex";
   try{const r=await fetch("/api/cleanup-suggestions").then(r=>r.json());const l=$("suggest-list");$("suggest-count").textContent=r.total;$("suggest-size").textContent=(r.freedEstimate/1024).toFixed(1)+" KB";
-    if(!r.suggestions||!r.suggestions.length){l.innerHTML="<div class='empty'>✨ 干净整洁</div>";return}
-    l.innerHTML=r.suggestions.map(i=>"<div style='display:flex;align-items:center;gap:6px;padding:5px 0;border-bottom:1px solid var(--line);font-size:12px'><span style='font-size:11px'>"+(i.safe?"✅":"⚠️")+"</span><span style='flex:1'>"+i.file+"</span><span style='color:var(--dim);font-size:10px'>"+fmtSize(i.size)+"</span><span style='color:var(--warn);font-size:10px'>"+i.reason+"</span>"+(i.safe?"<button class='btn sm' style='color:var(--ok)' onclick='deleteSuggested(\""+encodeURIComponent(i.file)+"\",this)'>删除</button>":"")+"</div>").join("")
+    if(!r.suggestions||!r.suggestions.length){l.innerHTML="<div class='empty'>✨ All clean</div>";return}
+    l.innerHTML=r.suggestions.map(i=>"<div style='display:flex;align-items:center;gap:6px;padding:5px 0;border-bottom:1px solid var(--line);font-size:12px'><span style='font-size:11px'>"+(i.safe?"✅":"⚠️")+"</span><span style='flex:1'>"+i.file+"</span><span style='color:var(--dim);font-size:10px'>"+fmtSize(i.size)+"</span><span style='color:var(--warn);font-size:10px'>"+i.reason+"</span>"+(i.safe?"<button class='btn sm' style='color:var(--ok)' onclick='deleteSuggested(\""+encodeURIComponent(i.file)+"\",this)'>Delete</button>":"")+"</div>").join("")
   }catch(e){console.error(e)}}
-async function deleteSuggested(f,btn){btn.textContent="...";btn.disabled=true;try{const r=await apiPost("/api/delete",{p:decodeURIComponent(f)});if(r.trashed){btn.textContent="✅";btn.style.color="var(--ok)"}else{btn.textContent="❌";toast("失败",true)}}catch(e){btn.textContent="❌"}}
-async function deleteAllSuggested(){if(!confirm("确定？"))return;const r=await fetch("/api/cleanup-suggestions").then(r=>r.json());if(!r.suggestions)return;let c=0;for(const i of r.suggestions){if(i.safe){try{const d=await apiPost("/api/delete",{p:i.file});if(d.trashed)c++}catch(e){}}}toast("✅ 清理了 "+c+" 项");showSuggestions()}
-async function showTrash(){const m=$("trash-modal");if(!m)return;m.style.display="flex";try{const r=await fetch("/api/trash").then(r=>r.json());const l=$("trash-list");if(!l)return;if(!r.items||!r.items.length){l.innerHTML="<div class='empty'>✨ 回收站为空</div>";return}l.innerHTML=r.items.map(i=>{const d=new Date(i.deletedAt).toLocaleString("zh-CN");return"<div style='display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--line);font-size:12px'><span style='flex:1'>"+(i.original||"?").split("/").pop()+"</span><span style='color:var(--dim);font-size:10px'>"+d+"</span><span style='color:var(--dim);font-size:10px'>"+fmtSize(i.size||0)+"</span><button class='btn sm' onclick='restoreFile(\""+i.trashId+"\")'>♻ 还原</button><button class='btn sm' style='color:var(--err)' onclick='purgeFile(\""+i.trashId+"\")'>✕ 删除</button></div>"}).join("")}catch(e){console.error(e)}}
-async function restoreFile(id){try{const r=await apiPost("/api/trash/restore",{id});if(r.restored){toast("♻ 已还原");showTrash();allFiles=await api("/api/files");renderFiles()}else toast("失败",true)}catch(e){toast("失败",true)}}
-async function purgeFile(id){if(!confirm("彻底删除？"))return;try{const r=await apiPost("/api/trash/purge",{id});if(r.purged){toast("✕ 已删除");showTrash()}else toast("失败",true)}catch(e){toast("失败",true)}}
+async function deleteSuggested(f,btn){btn.textContent="...";btn.disabled=true;try{const r=await apiPost("/api/delete",{p:decodeURIComponent(f)});if(r.trashed){btn.textContent="✅";btn.style.color="var(--ok)"}else{btn.textContent="❌";toast("Failed",true)}}catch(e){btn.textContent="❌"}}
+async function deleteAllSuggested(){if(!confirm("Confirm?"))return;const r=await fetch("/api/cleanup-suggestions").then(r=>r.json());if(!r.suggestions)return;let c=0;for(const i of r.suggestions){if(i.safe){try{const d=await apiPost("/api/delete",{p:i.file});if(d.trashed)c++}catch(e){}}}toast("✅ cleaned  "+c+" items");showSuggestions()}
+async function showTrash(){const m=$("trash-modal");if(!m)return;m.style.display="flex";try{const r=await fetch("/api/trash").then(r=>r.json());const l=$("trash-list");if(!l)return;if(!r.items||!r.items.length){l.innerHTML="<div class='empty'>✨ Trash empty</div>";return}l.innerHTML=r.items.map(i=>{const d=new Date(i.deletedAt).toLocaleString("zh-CN");return"<div style='display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--line);font-size:12px'><span style='flex:1'>"+(i.original||"?").split("/").pop()+"</span><span style='color:var(--dim);font-size:10px'>"+d+"</span><span style='color:var(--dim);font-size:10px'>"+fmtSize(i.size||0)+"</span><button class='btn sm' onclick='restoreFile(\""+i.trashId+"\")'>♻ Restore</button><button class='btn sm' style='color:var(--err)' onclick='purgeFile(\""+i.trashId+"\")'>✕ Delete</button></div>"}).join("")}catch(e){console.error(e)}}
+async function restoreFile(id){try{const r=await apiPost("/api/trash/restore",{id});if(r.restored){toast("♻ restored");showTrash();allFiles=await api("/api/files");renderFiles()}else toast("Failed",true)}catch(e){toast("Failed",true)}}
+async function purgeFile(id){if(!confirm("Permanently delete?"))return;try{const r=await apiPost("/api/trash/purge",{id});if(r.purged){toast("✕ Deleted");showTrash()}else toast("Failed",true)}catch(e){toast("Failed",true)}}
 function closeTrash(){var m=$("trash-modal");if(m)m.style.display="none"}
 
-$("badge").addEventListener("click",async()=>{const s=await api("/api/status");await api("/api/"+(s.enabled?"disable":"enable"));toast(s.enabled?"⏸ 已暂停":"▶ 已恢复");loadAll()});
-$("btn-refresh").addEventListener("click",()=>{toast("🔄 已刷新");loadAll()});
+$("badge").addEventListener("click",async()=>{const s=await api("/api/status");await api("/api/"+(s.enabled?"disable":"enable"));toast(s.enabled?"⏸ disabled":"▶ enabled");loadAll()});
+$("btn-refresh").addEventListener("click",()=>{toast("🔄 refreshed");loadAll()});
 $("search").addEventListener("input",()=>{if($("search-mode").value==="file")renderFiles()});
 $("search").addEventListener("keydown",e=>{if(e.key==="Enter"&&$("search-mode").value!=="file"){e.preventDefault();contentSearch($("search").value,"hybrid")}});
-$("search-mode").addEventListener("change",()=>{const m=$("search-mode").value;$("search").placeholder=m==="file"?"🔍 搜索文件名…":"🔍 搜索内容…（回车）";if(m==="file")renderFiles()});
-setInterval(()=>{loadAll();var c=document.getElementById("content");if(c&&c.innerHTML.includes("用户画像"))v4Profile()},30000);
+$("search-mode").addEventListener("change",()=>{const m=$("search-mode").value;$("search").placeholder=m==="file"?"🔍 Search filename...":"🔍 Search content... (Enter)";if(m==="file")renderFiles()});
+setInterval(()=>{loadAll();var c=document.getElementById("content");if(c&&c.innerHTML.includes("profile"))v4Profile()},30000);
 loadAll();
 </script>
 </body>

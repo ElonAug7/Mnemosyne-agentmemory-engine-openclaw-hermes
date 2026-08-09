@@ -26,6 +26,24 @@ const PORT = parseInt(process.env.MEMORY_UI_PORT || '8765', 10);
 const HOST = '127.0.0.1';   // 只监听本机，安全
 const TRASH_DIR = path.join(ROOT, 'memory', '.trash');
 
+// 简易 token 鉴权：启动时生成随机 8 位 token，无 token 拒绝访问
+// 仅当外部访问（非 127.0.0.1 / ::1 / localhost）时生效
+const crypto = require('crypto');
+const UI_TOKEN = process.env.MEMORY_UI_TOKEN || crypto.randomBytes(4).toString('hex');
+
+function checkAuth(req) {
+  // 本机访问免检
+  const remote = req.socket.remoteAddress || '';
+  if (remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1') return true;
+  // 外部访问：URL 参数或 Cookie 中必须有正确 token
+  const url = new URL(req.url, 'http://localhost');
+  const tokenParam = url.searchParams.get('token');
+  const cookieHeader = req.headers.cookie || '';
+  const tokenCookie = cookieHeader.split(';').find(c => c.trim().startsWith('mnemosyne_token='));
+  const tokenVal = tokenCookie ? tokenCookie.split('=')[1]?.trim() : null;
+  return tokenParam === UI_TOKEN || tokenVal === UI_TOKEN;
+}
+
 // 允许浏览的路径（白名单，防目录穿越）
 const ALLOWED = [
   path.join(ROOT, 'memory'),
@@ -184,6 +202,12 @@ const PAGE = fs.readFileSync(path.join(__dirname, 'ui-page.html'), 'utf8');
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${HOST}`);
   const json = (o) => { res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(o)); };
+
+  // 鉴权: 外部访问需 token
+  if (!checkAuth(req)) {
+    res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' });
+    return res.end('Access denied. Use ?token=<token> or set MEMORY_UI_TOKEN env var.');
+  }
 
   try {
     if (url.pathname === '/') {
@@ -578,5 +602,6 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`Mnemosyne v4 Pro UI listening on http://${HOST}:${PORT} (workspace: ${ROOT})`);
+  console.log(`Mnemosyne v5 UI http://${HOST}:${PORT} (workspace: ${ROOT})`);
+  if (UI_TOKEN) console.log(`  Token: ${UI_TOKEN}  (export MEMORY_UI_TOKEN=${UI_TOKEN} to fix)`);
 });

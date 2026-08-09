@@ -1,17 +1,17 @@
 /**
- * time.js — Time-Aware Memory Refactoring (v4.5-Pro Phase 1)
- * 
- * BM25 beats v4.5 on temporal stability because exact word matching
- * naturally filters stale info. This module adds explicit time ordering
- * while preserving semantic recall.
- * 
- * Exports: getHalfLife(), relativeTime(), resolveConflicts(), markStale()
+ * time.js — Time-Aware Memory Refactoring (v5.1)
+ *
+ * v5.1: IMP→半衰期映射规则 — 9维 imp 得分自动推导半衰期类别
+ * 解决"技术事实被误标为闲聊导致7天快速沉底"的不可逆信息丢失问题
+ *
+ * Exports: getHalfLife(), relativeTime(), resolveConflicts(), markStale(),
+ *          impToHalfLife(), classifyByImp(), getOverrideDecay()
  */
 
 const HALF_LIFE = {
   // Aggressive decay — factual info that changes often
   job:      7,   // "work at X", "job title"
-  location: 7,   // "live in X", "office at Y"  
+  location: 7,   // "live in X", "office at Y"
   project:  14,  // "working on X feature"
   status:   14,  // "currently doing X"
   // Moderate decay — preferences
@@ -22,6 +22,8 @@ const HALF_LIFE = {
   birthday:  0,   // never expires
   history:   0,   // historical events
   identity:  0,   // "name is X", "from Y"
+  decision:  0,   // v5.1: decisions are permanent
+  tech_fact: 90,  // v5.1: technical facts have long decay
 };
 
 const CATEGORY_PATTERNS = [
@@ -37,6 +39,32 @@ const CATEGORY_PATTERNS = [
   { cat: 'identity', re: /名字|姓名|我是|我叫|name is|I am|I'm|from/i },
 ];
 
+// v5.1: IMP 模式 → 半衰期类别映射
+// 优先级高于文本分类（imp 信号比文本关键词更可靠）
+const IMP_TO_CATEGORY = [
+  { re: /决定|确认|结论|选定|采纳|最终方案|定了|拍板|agreed|decided|final/i, cat: 'decision' },
+  { re: /优化|改进|重构|架构|设计|代码|bug|修复|性能|安全|配置|系统|功能|模块|评估|分析|方案/i, cat: 'tech_fact' },
+  { re: /待办|todo|fixme|下一步|计划|回头|稍后|提醒我|记得|别忘了|截止|deadline/i, cat: 'status' },
+  { re: /喜欢|不喜欢|偏好|必须|不能|不许|不准|不要|坚决|原则|底线|风格|配色|习惯|想要/i, cat: 'preference' },
+];
+
+// v5.1: 用户手动衰减修正（decay-override.json）
+const OVERRIDE_FILE = require('path').join(__dirname, '..', '..', 'memory', 'engine', 'decay-override.json');
+let _overrideCache = null;
+
+function loadOverrides() {
+  if (_overrideCache) return _overrideCache;
+  try { _overrideCache = JSON.parse(require('fs').readFileSync(OVERRIDE_FILE, 'utf8')); }
+  catch { _overrideCache = {}; }
+  return _overrideCache;
+}
+
+function getOverrideDecay(textHint) {
+  const ov = loadOverrides();
+  const key = (textHint || '').slice(0, 80).trim();
+  return ov[key] || null; // { halfLife: N } 或 null
+}
+
 function classifyMemory(text) {
   for (const { cat, re } of CATEGORY_PATTERNS) {
     if (re.test(text)) return cat;
@@ -44,11 +72,38 @@ function classifyMemory(text) {
   return 'preference'; // default: moderate decay
 }
 
+// v5.1: 基于 IMP 模式分类半衰期（优先级高于文本分类）
+function classifyByImp(text) {
+  for (const { re, cat } of IMP_TO_CATEGORY) {
+    if (re.test(text)) return cat;
+  }
+  return null; // 未匹配，回退到文本分类
+}
+
+// v5.1: 综合 IMP + 文本分类 → 半衰期
+function impToHalfLife(text, imp) {
+  // 1. 检查手动修正
+  const override = getOverrideDecay(text);
+  if (override && override.halfLife !== undefined) return override.halfLife;
+
+  // 2. IMP 模式分类（高 imp 消息优先用 imp 信号）
+  if (imp && imp >= 0.5) {
+    const impCat = classifyByImp(text);
+    // 注意: 用 !== undefined 而非 ||，因为 0 是合法值（永不衰减）
+    if (impCat && HALF_LIFE[impCat] !== undefined) return HALF_LIFE[impCat];
+  }
+
+  // 3. 文本分类回退
+  const textCat = classifyMemory(text);
+  return HALF_LIFE[textCat] !== undefined ? HALF_LIFE[textCat] : 60;
+}
+
 function getHalfLife(textOrCategory) {
-  if (typeof textOrCategory === 'string' && !HALF_LIFE[textOrCategory]) {
+  if (typeof textOrCategory === 'string' && HALF_LIFE[textOrCategory] === undefined) {
     textOrCategory = classifyMemory(textOrCategory);
   }
-  return HALF_LIFE[textOrCategory] || 60;
+  // 注意: 用!== undefined 而非 ||，0=永不衰减
+  return HALF_LIFE[textOrCategory] !== undefined ? HALF_LIFE[textOrCategory] : 60;
 }
 
 function relativeTime(isoString) {
@@ -67,7 +122,7 @@ function relativeTime(isoString) {
 }
 
 function markStale(memory, halflifeDays) {
-  if (!halflifeDays || halflifeDays <= 0) return { ...memory, stale: false };
+  if (halflifeDays === undefined || halflifeDays === null || halflifeDays < 0) return { ...memory, stale: false };
   if (!memory.ts && !memory.createdAt) return { ...memory, stale: false };
   
   const ts = memory.ts || memory.createdAt;
@@ -112,4 +167,4 @@ function resolveConflicts(records, entity) {
   return resolved;
 }
 
-module.exports = { HALF_LIFE, getHalfLife, relativeTime, markStale, resolveConflicts, classifyMemory };
+module.exports = { HALF_LIFE, getHalfLife, relativeTime, markStale, resolveConflicts, classifyMemory, impToHalfLife, classifyByImp, getOverrideDecay };

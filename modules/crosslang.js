@@ -1,11 +1,15 @@
 /**
- * crosslang.js — Cross-Language Alignment (v4.5-Pro Phase 5)
+ * crosslang.js — Cross-Language Alignment (v5)
  *
  * Bilingual entity mapping for automatic query expansion.
  * Zero deps — pure dictionary-based.
+ * v5: crosslang-user.json user dictionary support.
  *
  * Exports: expandCrossLang(), getOutputConstraint(), isEquivalent()
  */
+
+const path = require('path');
+const fs = require('fs');
 
 const ENTITY_MAP = {
   // Tech
@@ -16,6 +20,11 @@ const ENTITY_MAP = {
   'vector': '向量',
   'tokenizer': '分词器',
   'keywords': '关键词',
+  'kubernetes': 'K8s',
+  'k8s': 'Kubernetes',
+  'llm': '大语言模型',
+  'large language model': '大语言模型',
+  'rag': '检索增强生成',
   // Places  
   'shenzhen': '深圳',
   'beijing': '北京',
@@ -52,25 +61,57 @@ const ENTITY_MAP = {
   'throughput': '吞吐',
 };
 
-// Build reverse map
-const REVERSE_MAP = {};
-for (const [en, cn] of Object.entries(ENTITY_MAP)) {
-  REVERSE_MAP[cn] = en;
+// 加载用户自定义词典（内存缓存，启动时加载一次）
+const USER_DICT_FILE = path.join(path.dirname(__dirname), '..', '..', 'memory', 'engine', 'crosslang-user.json');
+let _userDict = null;
+
+function loadUserDict() {
+  if (_userDict) return _userDict;
+  try {
+    _userDict = JSON.parse(fs.readFileSync(USER_DICT_FILE, 'utf8'));
+  } catch {
+    _userDict = {};
+    const template = { "_": "Add your custom mappings. Format: \"english\": \"中文\"", "K8s": "Kubernetes", "LLM": "大语言模型" };
+    try { fs.writeFileSync(USER_DICT_FILE, JSON.stringify(template, null, 2)); } catch {}
+  }
+  return _userDict;
+}
+
+// 合并内置表 + 用户词典
+function getFullEntityMap() {
+  const user = loadUserDict();
+  const merged = { ...ENTITY_MAP };
+  for (const [k, v] of Object.entries(user)) {
+    if (k !== '_') merged[k.toLowerCase()] = v;
+  }
+  return merged;
+}
+
+// Build reverse map (from merged entity map)
+function getReverseMap() {
+  const full = getFullEntityMap();
+  const rev = {};
+  for (const [en, cn] of Object.entries(full)) {
+    rev[cn] = en;
+  }
+  return rev;
 }
 
 function expandCrossLang(query) {
+  const full = getFullEntityMap();
+  const reverse = getReverseMap();
   const terms = [];
   const lower = query.toLowerCase();
   
   // English → Chinese
-  for (const [en, cn] of Object.entries(ENTITY_MAP)) {
+  for (const [en, cn] of Object.entries(full)) {
     if (lower.includes(en) && !lower.includes(cn)) {
       terms.push(cn);
     }
   }
   
   // Chinese → English
-  for (const [cn, en] of Object.entries(REVERSE_MAP)) {
+  for (const [cn, en] of Object.entries(reverse)) {
     if (query.includes(cn) && !lower.includes(en)) {
       terms.push(en);
     }

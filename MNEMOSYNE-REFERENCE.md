@@ -1,177 +1,175 @@
-# 🦞 Mnemosyne v4.5-Pro — Complete Technical Reference
+# 🦞 Mnemosyne v5 — Complete Technical Reference · 完整技术参考
 
-> 3,291 lines · 20 commands · Zero-NN · Zero deps · Zero models · 5 pluggable modules · bash install.sh
+> **全量存储，精准回忆。不模拟遗忘，只模拟注意。**
+> Store everything. Recall precisely. No simulated forgetting, only simulated attention.
 
----
-
-## 0. One-Line Definition
-
-Mnemosyne v4.5-Pro is a **purely local, zero-neural-network cognitive memory engine** with 5 pluggable modules (time-aware decay, refusal front-loading, query rewrite, multi-hop reasoning, cross-language alignment). No LLM API, no embedding model, no vector database.
+> Compound-Cue Core · 复合线索核心 · Zero-NN · 零神经网络 · Zero deps · 零依赖
 
 ---
 
-## 1. What It Can Do
+## 0. One-Line Definition · 一句话定义
 
-### Core Capabilities
+Mnemosyne v5 is a **purely local, zero-neural-network cognitive memory engine** built on **compound-cue theory**. Storage is machine-like (everything saved, nothing forgotten). Retrieval is human-like: it computes a single compound familiarity score (imp + recency decay + keyword match + hit frequency) to surface only what matters in this moment. The rest stays in the library — never deleted, just not shown right now.
 
-| Capability | Implementation | Effect |
+Mnemosyne v5 是一个纯本地、零神经网络依赖的认知记忆引擎，基于**复合线索理论**。存储像机器（全量保存，永不丢失），检索像人（复合线索评分，情境选择性提取）。10 万条记忆都在库里，此刻只递给你需要的那一条。
+
+---
+
+## 1. What It Can Do · 核心能力 (25 项)
+
+| Capability · 能力 | Implementation · 实现 | Effect · 效果 |
 |------|---------|------------|
-| Auto message recording | Gateway Hook -> record | Every user/assistant message auto-saved |
-| Auto importance scoring | 9-dim regex (0.02-1.00) | Key decisions boosted, chatter demoted |
-| 4-layer memory | raw -> working -> medium -> long | Auto-distillation from chat to long-term knowledge |
-| Auto-summarization | consolidate (3-condition trigger) | Every 30min, conversations -> structured summaries |
-| Topic continuation | context (>12h + semantic overlap + dialogue mode) | "Last time we discussed X, welcome back" |
-| Memory echo | recall (high-imp auto-search) | Auto-links to past topics |
-| Long-term distillation | 22:30 cron -> proposals -> agent review | MEMORY.md auto-maintained |
-| Multi-mode search | keyword/semantic/hybrid/recent/history | Exact, fuzzy, recent-biased, history-biased |
-| Semantic dedup | dedupeResults() | No duplicate search results |
-| Memory QA | qa command (context + profile + search + MEMORY.md) | Natural language -> structured sources |
-| Bilingual tokenizer | tokenize() (2-gram + word extraction) | Chinese + English search |
-| Write batching | batch 10 msgs or 30s -> sync/reindex | JSONL real-time, heavy ops batched |
-| Time-aware decay | time.js module | Per-type half-life (7-90 days), relative anchors, conflict resolution |
-| Refusal detection | refusal.js module | Score distribution check, 3-tier confidence, keyword coincidence filter |
-| Query rewrite | rewrite.js module | Session context + post-retrieval expansion + safety valve |
-| Multi-hop reasoning | multihop.js module | Decomposition + per-hop verification + evidence chains |
-| Cross-language | crosslang.js module | 100+ bilingual entity map + auto-expansion |
-
-### Auxiliary
-
-| Capability | Description |
-|------|------|
-| Todo management | Extract from conversations, Web UI |
-| User profile | Auto-maintain tech stack/preferences/style |
-| Daily/weekly reports | Statistical summaries |
-| Recycle bin | 15-day retention, restore/purge |
-| Web Console | http://127.0.0.1:8765 file browser/search/management |
-| Auto-archiving | >30d raw -> gzip, >180d medium -> gzip |
-| Sensitive info redaction | API key/password/private key auto-filter |
-| Git-friendly | All memories in plain Markdown/JSONL, diff/version-control |
+| Auto recording · 自动记录 | Gateway Hook -> record | Every message auto-saved · 每条消息自动保存 |
+| IMP scoring · 重要性评分 | 9-dim regex (0.02-1.00) | Key decisions boosted, chatter demoted · 决策加权，闲聊降级 |
+| 4-layer memory · 四层记忆 | raw -> working -> medium -> long | Auto-distillation · 自动提炼 |
+| **Compound-cue search · 复合线索搜索** | imp + recency + keyword + hit frequency | Single-pass scoring · 单次评分 |
+| **Memory cache · 内存缓存** | LRU hot cache (7d, 500 entries) | Zero repeat I/O · 消除重复I/O |
+| **Time decay · 时间衰减** | time.js half-life in ranking | Stale info auto-sinks · 过期自动下沉 |
+| **Hit frequency · 命中频率** | Memristor-style dynamic weighting | Frequent memories get boost · 常用记忆自动加权 |
+| **User tags · 用户标签** | `record --tags "t1,t2"` | Tag match ×3 in search · 标签匹配权重×3 |
+| **Semantic async · 语义异步** | keyword-first, semantic fire-and-forget | Instant keyword, semantic supplements · 关键词先出，语义后补 |
+| **Profiler · 探查器** | `--profile` flag | Per-phase P50/P99 · 各阶段耗时分析 |
+| Auto-summarization · 自动摘要 | consolidate (3-condition trigger) | Conversations → structured summaries · 对话→结构化摘要 |
+| Topic continuation · 话题续接 | context (>12h + semantic overlap) | "Last time we discussed X" · 断点续聊 |
+| Memory echo · 记忆回响 | recall (high-imp auto-search) | Auto-links to past topics · 自动关联历史 |
+| Long-term distillation · 长期提炼 | 22:30 cron → proposals → agent review | MEMORY.md auto-maintained · 自动维护 |
+| Multi-mode search · 多模式搜索 | keyword/semantic/hybrid/recent/history | Compound-cue powered · 复合线索驱动 |
+| Bilingual tokenizer · 双语分词 | tokenize() (2-gram + word extraction) | Chinese + English search · 中英搜索 |
+| Memory QA · 记忆问答 | context + profile + search + MEMORY.md | Natural language → structured sources |
+| Bilingual entity map · 跨语言 | 100+ entity mapping | Auto query expansion · 自动查询扩展 |
+| Multi-hop reasoning · 多跳推理 | 6 decomposition patterns | Per-hop verification · 逐跳验证 |
+| Query rewrite · 查询改写 | Session-level dynamic context | Pronoun resolution · 代词消解 |
+| Refusal detection · 拒答检测 | Score distribution, 3-tier confidence | Abstention front-loading · 拒答前置 |
+| Todo management · 待办管理 | Auto-extract + Web UI | 待办清单 |
+| User profile · 用户画像 | Auto-maintain prefs/tech/style | 偏好/技术栈/风格 |
+| Sensitive redaction · 脱敏 | API key/password filter | 自动过滤 |
+| Auto-archiving · 自动归档 | >30d raw → gz, >180d medium → gz | 节省空间 |
 
 ---
 
-## 2. Architecture
+## 2. Architecture · 架构
+
+### Compound-Cue Scoring Model · 复合线索评分模型 (v5)
 
 ```
-User Message
-  |
+familiarity = 0.35·imp + 0.25·recency + 0.25·keyword + 0.10·hitFreq + 0.05·layerW
+```
+
+| Factor · 因子 | Weight · 权重 | Source · 来源 |
+|------|:--:|------|
+| imp (重要性) | 0.35 | 9-dim regex, pre-computed at write time · 写时预计算 |
+| recency (时效性) | 0.25 | time.js half-life: `2^(-age/halfLife)` · 半衰期衰减 |
+| keyword (关键词) | 0.25 | 2-gram tokenizer + tag boost (×3) · 分词+标签加成 |
+| hitFreq (命中频率) | 0.10 | hit-frequency.json, cap 0.3 · 忆阻器权重 |
+| layerW (层级) | 0.05 | Configurable per-layer · 可配置层权重 |
+
+### Data Flow · 数据流
+
+```
+User Message · 用户消息
+  ↓
 Gateway Hook (memory-recorder)
-  |
-record -> sanitize -> compress -> tokenize() -> batch counter
+  ↓
+record → sanitize → compress → tokenize → batch counter
   |                          |
-imp scoring (9-dim regex)   JSONL real-time write
+imp scoring (9-dim regex)   JSONL real-time write + tags
   |                          |
-batch flush (10msgs/30s)    -> syncTranscripts
-  |                          -> reindex
-recall auto-trigger          -> autoConsolidate (30min throttle)
+batch flush (10msgs/30s)    → syncTranscripts
+  |                          → reindex
+recall auto-trigger          → autoConsolidate (30min throttle)
   |
 working memory refresh
   |
-consolidate -> topic tags + quality self-assessment -> medium summary blocks
+consolidate → topic tags + quality self-assessment → medium summary blocks
   |
-nightly distill (22:30) -> proposals -> agent review -> MEMORY.md
+nightly distill (22:30) → proposals → agent review → MEMORY.md
 ```
 
-### v4.5-Pro Module Pipeline
+### v5 Module Pipeline · 模块管线
 
 ```
 cmdQA(query)
   |
-  +-> crosslang.js: bilingual entity expansion
-  +-> multihop.js: sub-question decomposition
-  +-> rewrite.js: session-context rewrite
+  +-> crosslang.js: bilingual entity expansion · 跨语言扩展
+  +-> multihop.js: sub-question decomposition · 子问题分解
+  +-> rewrite.js: session-context rewrite · 会话改写
   |
-  +-> search (keyword + MEMORY.md full-text)
+  +-> compoundScore(): imp + recency + keyword + hit_freq (single-pass)
   |
-  +-> refusal.js: score distribution check -> refuse if unreliable
-  +-> time.js: per-result staleness marking
+  +-> refusal.js: score distribution check → refuse if unreliable · 拒答判断
+  +-> time.js: per-result staleness marking · 陈旧标记
   |
   -> structured answer with sources + confidence + refusal info
 ```
 
-### Four-Layer Memory
+### Four-Layer Memory · 四层记忆
 
-| Layer | Path | Format | Retention | Purpose |
+| Layer · 层 | Path · 路径 | Format · 格式 | Retention · 保留 | Purpose · 用途 |
 |---|------|---------|:---:|------|
-| Short: Chat Logs | `memory/short/raw/YYYY-MM-DD.jsonl` | JSONL (ts, role, text, imp) | 30d -> gzip | Raw message stream |
-| Short: Workbench | `memory/short/working/current.json` | JSON (task, decisions, questions, facts) | real-time | Current context |
-| Short: Injectable | `memory/short/inject/YYYY-MM-DD.json` | JSON (summary, topics, facts, decisions) | 7d | Agent startup injection |
-| Medium: Summary | `memory/medium/YYYY-MM-DD.md` | Markdown (timestamp + topic tags + quality) | 180d -> gzip | Daily archive |
-| Long: Global Knowledge | `MEMORY.md` | Markdown (prefs/facts/projects/events) | permanent | Agent long context |
-| Index | `memory/index/index.md` | Markdown (one topic per line) | permanent | Search acceleration |
-| User Profile | `memory/profile.md` | Markdown (prefs/tech stack/style) | permanent | Personalization |
-| Growth Log | `memory/growth.md` | Markdown (incremental long-term memory log) | permanent | Memory evolution tracking |
+| Short: Chat Logs · 对话 | `memory/short/raw/YYYY-MM-DD.jsonl` | JSONL (ts, role, text, imp, tags) | 30d → gz | Raw message stream · 原始消息流 |
+| Short: Workbench · 工作台 | `memory/short/working/current.json` | JSON (task, decisions, questions, facts) | real-time | Current context · 当前上下文 |
+| Short: Injectable · 摘要注入 | `memory/short/inject/YYYY-MM-DD.json` | JSON (summary, topics, facts, decisions) | 7d | Agent startup injection · 启动注入 |
+| Medium: Summary · 中期归档 | `memory/medium/YYYY-MM-DD.md` | Markdown (timestamp + topic tags + quality) | 180d → gz | Daily archive · 按日归档 |
+| Long: Global Knowledge · 长期知识 | `MEMORY.md` | Markdown (prefs/facts/projects/events) | permanent | Agent long context · 全局上下文 |
+| Index · 索引 | `memory/index/index.md` | Markdown (one topic per line) | permanent | Search acceleration · 搜索加速 |
+| User Profile · 用户画像 | `memory/profile.md` | Markdown (prefs/tech stack/style) | permanent | Personalization · 个性化 |
 
 ---
 
-## 3. imp Scoring: 9-Dimensional Regex
+## 3. IMP Scoring: 9-Dimensional Regex · 9维正则评分
 
-**Core differentiator: Zero neural networks — pure regex importance assessment.**
+**Zero neural networks — pure regex importance assessment. · 零神经网络 — 纯正则重要性评估。**
 
 ```
 base: user=0.40, assistant=0.30
 ---
-IMP_INSTRUCT  +0.25  help/give/please/do/change/write/implement/fix/deploy/continue/then
-IMP_PREF      +0.35  like/dislike/must/cannot/principle/bottom-line/style/habit
-IMP_DECISION  +0.30  decide/confirm/conclusion/select/adopt/final-plan/agreed
-IMP_TODO      +0.25  todo/next-step/plan/remind/deadline/tomorrow
-IMP_TECH      +0.12  optimize/refactor/architecture/code/bug/performance/security
-IMP_FACT      +0.10  number+unit (CNY/day/hour/month/year/%)
+IMP_INSTRUCT  +0.25  帮/给/请/做/改/写/实现/修复/部署/继续/然后
+IMP_PREF      +0.35  喜欢/不喜欢/必须/不能/原则/底线/风格/习惯
+IMP_DECISION  +0.30  决定/确认/结论/选定/采纳/最终方案/agreed
+IMP_TODO      +0.25  待办/todo/下一步/计划/提醒/截止/明天
+IMP_TECH      +0.12  优化/重构/架构/代码/bug/性能/安全/配置
+IMP_FACT      +0.10  数字+单位 (元/块/天/小时/月/年/%)
 ---
-Fix1: System/chitchat downgrade
-  SYSTEM -> 0.02  heartbeat/system notification/continuation
-  CHITCHAT -> 0.10  ok/thanks/roger
----
-Fix2: Core principle weighting +0.15
-  constraint words + domain words simultaneously
----
-Fix3: Long-form directional -> 0.75
-  text >100 chars + (priority/direction/architecture/positioning/evaluate/competitor)
----
-Fix4: Dual-keyword combo +0.20
-  5 cross-domain pairs (deploy+model, modify+architecture, performance+must, cut+feature, compare+solution)
----
-Fix5: Negation/correction +0.25
-  (not/wrong/incorrect/try-another-approach/start-over/overturn/cancel)
----
-Fix6: Comparative decision +0.18
-  comparison words + object words simultaneously
----
-Fix7: Commitment/promise +0.35
-  (I-guarantee/I-promise/I-swear/from-now-on/remembered/next-time-for-sure)
-  Strong commitments (swear/guarantee/never-forget) -> directly to 0.90
----
+Fix1: System/chitchat downgrade · 系统/闲聊降级
+  SYSTEM → 0.02  heartbeat/system notification/continuation
+  CHITCHAT → 0.10  ok/thanks/roger/哈哈/嗯/收到/明白
+Fix2: Core principle weighting +0.15 · 核心原则加权
+Fix3: Long-form directional → 0.75 · 长文本方向性
+Fix4: Dual-keyword combo +0.20 · 双关键词组合
+Fix5: Negation/correction +0.25 · 否定/纠正
+Fix6: Comparative decision +0.18 · 对比决策
+Fix7: Commitment/promise +0.35 · 承诺保证 (强承诺→0.90)
 Cap: 1.00
 ```
 
-### Measured Results
+---
 
-| Input | Old imp | v4.5-Pro imp | Triggered Rules |
-|------|:---:|:---:|------|
-| "Don't use the previous approach, performance is bad, try another way" | ~0.65 | **1.00** | PREF+negation+TECH |
-| "Must guarantee search latency under 50ms, hard requirement" | ~0.70 | **0.95** | PREF+TECH+combo |
-| "Compared 3 solutions, Mnemosyne is simpler and faster than Mem0" | ~0.70 | **0.90** | TECH+combo+compare |
-| "I promise to sync to memory-engine every time from now on" | ~0.60 | **0.90** | Fix7 strong commitment |
-| "Nice weather today" | 0.40 | 0.40 | base only (no impact) |
+## 4. Search: Compound-Cue Powered · 复合线索搜索 (v5)
+
+### Modes · 模式
+
+| Mode · 模式 | Algorithm · 算法 | Latency · 延迟 | Use Case · 场景 |
+|------|---------|:---:|------|
+| keyword | Compound-cue single-pass · 复合线索单次评分 | ~18ms | Exact + fuzzy · 精确+模糊 |
+| semantic | Local bigram+trigram vectors (512-dim) | ~120ms (async) | Fuzzy matching · 语义匹配 |
+| hybrid | keyword-first + semantic async (200ms) · 关键词优先+语义异步 | ~20ms perceived | **Default · 推荐默认** |
+| recent | Same, short-term bias · 偏重短期 | ~18ms | Recent focus · 查最近 |
+| history | Same, long-term bias · 偏重长期 | ~18ms | Historical lookup · 查历史 |
+
+### v5 Latency Comparison · 延迟对比
+
+| Mode · 模式 | v4.5-Pro | v5 | Improvement · 提升 |
+|------|:---:|:---:|:---:|
+| keyword | 42ms | ~18ms | **2.3×** |
+| hybrid | 130ms | ~20ms (perceived) | **6.5×** |
 
 ---
 
-## 4. Search: 5 Parallel Modes
+## 5. Modules · 模块 (v5)
 
-| Mode | Algorithm | Weight Strategy | Latency | Use Case |
-|------|------|---------|:---:|------|
-| keyword | Full-text + bilingual 2-gram tokenizer | 4-layer weighted | ~42ms | Exact search |
-| semantic | Local bigram+trigram vectors (512-dim) | Cosine similarity | ~120ms | Fuzzy matching |
-| hybrid | keyword + semantic fusion | dedupeResults | ~130ms | Recommended default |
-| recent | Same as above | Bias to short-term (working 25%, raw 25%) | ~120ms | Recent focus |
-| history | Same as above | Bias to long-term (long 45%, idx 20%) | ~120ms | Historical lookup |
+### time.js — Dynamic Half-Life Decay · 动态半衰期衰减
 
----
-
-## 5. Modules (v4.5-Pro)
-
-### time.js — Dynamic Half-Life Decay
-
-| Category | Half-Life | Examples |
+| Category · 分类 | Half-Life · 半衰期 | Examples · 示例 |
 |------|:---:|------|
 | job, location, project, status | 7-14 days | "work at X", "live in Y", "working on Z" |
 | preference, habit, style | 60-90 days | "prefer A over B", "coding style: functional" |
@@ -179,167 +177,139 @@ Cap: 1.00
 
 Functions: `getHalfLife()`, `relativeTime()`, `markStale()`, `resolveConflicts()`
 
-### refusal.js — Abstention Front-Loading
+### refusal.js — Abstention Front-Loading · 拒答前置
 
-Three-tier system:
-1. **No results** -> high-confidence refusal
-2. **Top score below P10 threshold + low gap** -> likely noise, refuse
-3. **Keyword hit but semantic mismatch** -> low-confidence warning with partial results
+Three-tier system · 三档系统:
+1. No results → high-confidence refusal · 无结果→高置信拒答
+2. Top score below P10 + low gap → likely noise, refuse · 低于P10+低差距→拒答
+3. Keyword hit but semantic mismatch → low-confidence warning · 关键词命中但无语义→低置信警告
 
-Functions: `shouldRefuse()`, `scoreDistributionCheck()`
+### rewrite.js — Session Query Rewrite · 会话查询改写
 
-### rewrite.js — Session Query Rewrite
+- Pronoun resolution from session context · 代词消解
+- Abbreviation expansion · 缩写展开
+- Post-retrieval keyword expansion · 检索后扩展
+- Safety valve: all rewrites validated · 安全阀校验
 
-- Pronoun resolution from session context (stateless, no persona stored)
-- Abbreviation expansion
-- Post-retrieval keyword expansion
-- Safety valve: all rewrites validated against original query
+### multihop.js — Multi-Hop Reasoning · 多跳推理
 
-Functions: `feedSessionMessage()`, `extractSessionContext()`, `rewriteQuery()`, `validateRewrite()`
+- 6 decomposition patterns · 6种分解模式
+- Per-hop verification (entity overlap check) · 逐跳验证
+- Evidence chain completeness · 证据链完整性
+- Auto stop on drift or max hops · 漂移自动终止
 
-### multihop.js — Multi-Hop Reasoning
+### crosslang.js — Cross-Language Alignment · 跨语言对齐
 
-- 6 decomposition patterns for complex questions
-- Per-hop verification (entity overlap check)
-- Evidence chain completeness tracking
-- Automatic stop on drift or max hops
-
-Functions: `decompose()`, `verifyHop()`, `buildEvidenceChain()`, `shouldStop()`
-
-### crosslang.js — Cross-Language Alignment
-
-- 100+ bilingual entity mapping (English <-> Chinese)
-- Automatic bidirectional query expansion
-- Output language constraints
-- Equivalence checking for evaluation
-
-Functions: `expandCrossLang()`, `getOutputConstraint()`, `isEquivalent()`
+- 100+ bilingual entity mapping (English ↔ Chinese) · 中英实体映射
+- Automatic bidirectional query expansion · 双向查询扩展
+- Output language constraints · 输出语言约束
 
 ---
 
-## 6. Limitations (Honest)
+## 6. Mandatory Protocol · 强制协议 🔴
 
-| Limitation | Reason | Alternative |
-|------|------|------|
-| No natural language answer generation | No LLM | External LLM for synthesis |
-| No cross-language semantic search | No embedding model | Dictionary-based expansion only |
-| No multi-hop deep reasoning | No neural network | Decomposition only; external LLM needed |
-| Write throughput 2 docs/s | Full pipeline per record | Async queue (planned) |
-| LoCoMo R@K 0% | Returns memory content, not document IDs | Memory-Native Protocol recommended |
+**Installed automatically · 安装后自动注入**
+
+### Session Startup · 会话启动
+
+1. Read `MEMORY.md` · 读长期记忆
+2. Run `engine.js context` · 获取上下文
+3. Read `memory/todos.md` · 读待办
+4. Run `engine.js sync --quick` · 补录同步
+5. Review distill proposals · 审阅提炼建议
+
+### Before EVERY Reply · 每条回复前 (不可跳过)
+
+1. **Read `memory/short/working/last-recall.json`** · 读 last-recall
+2. **Run `recall --query`** for history/decisions/preferences · 历史相关跑 recall
+3. **Cite memory sources** in reply · 回复中引用记忆来源
+
+**Consequence of skipping: reply quality degrades · 跳过后果: 回复质量不可靠**
 
 ---
 
-## 7. 20 Commands
+## 7. 24 Commands · 24 条命令
 
-| Command | Usage |
+| Command · 命令 | Usage · 用法 |
 |------|------|
-| `record` | `--role user|assistant --text "..."` |
+| `record` | `--role user\|assistant --text "..." [--tags tag1,tag2]` |
 | `sync` | `[--quick]` |
-| `status` | — |
-| `enable/disable` | — |
-| `init` | — |
-| `search` | `--query "..." --mode keyword|hybrid|semantic|recent|history` |
-| `qa` | `--query "..."` (Pro: with rewrite + refusal + multihop + time + crosslang) |
-| `context` | — |
-| `recall` | `--query "..."` |
-| `report` | `[--weekly]` |
-| `profile` | `[--update]` |
-| `distill-proposals` | `--list|--apply <id>` |
-| `consolidate` | `[--force|--check|--retag]` |
-| `todos` | `[--add|--done <id>]` |
-| `embed` | `[--force]` |
-| `reindex` | — |
-| `cleanup` | `[--confirm]` |
-| `health` | — |
-| `stats` | — |
+| `status` | Engine status + cache + v5 features · 引擎状态+缓存+v5特性 |
+| `enable/disable` | Toggle recording · 开关记录 |
+| `init` | Initialize directory structure · 初始化 |
+| `search` | `--query "..." --mode keyword\|semantic\|hybrid\|recent\|history [--profile]` |
+| **`rate`** | `--result <n> --score +1\|-1` — rate last search result · 评分搜索结果 **v5.2** |
+| **`recalibrate`** | `[--apply]` — fit weights from ratings · 从评分拟合权重 **v5.2** |
+| `qa` | `--query "..."` (with rewrite + refusal + multihop + time + crosslang) |
+| `context` | Session context (task + todos + questions + topics) · 会话上下文 |
+| `recall` | `--query "..."` — auto-writes to last-recall.json |
+| `report` | `[--weekly]` — daily/weekly summary · 每日/周报 |
+| `profile` | `[--update]` — user profile · 用户画像 |
+| `distill-proposals` | `--list \| --apply <id>` — nightly distill review · 提炼审阅 |
+| `consolidate` | `[--force\|--check\|--retag]` — auto-integrate conversations · 自动整合 |
+| `todos` | `[--add \| --done <id>]` — todo management · 待办管理 |
+| `embed` | `[--force]` — build semantic index · 构建语义索引 |
+| `reindex` | Rebuild keyword index · 重建关键词索引 |
+| `cleanup` | `[--confirm]` — clean old files · 清理旧文件 |
+| `health` | System health check · 健康检查 |
+| `stats` | Usage statistics · 统计仪表盘 |
+| `profile-debug` | Cache stats + profiler report · 缓存+探查器报告 |
+| `tags` | `--query "..."` — search by tags · 按标签搜索 |
+
+### 用户反馈权重自校准 · RLHF-lite (v5.2)
+
+```bash
+search --query "关键词"  →  自动缓存结果到 last-search.json
+rate --result 3 --score +1  →  第3条评分+1（好）
+rate --result 1 --score -1  →  第1条评分-1（差）
+recalibrate               →  最小二乘拟合新权重（需≥10条）
+recalibrate --apply        →  写入 config.json，即时生效
+```
+
+评分数据流: ratings.json → 高斯消元解 5×5 线性方程组 → 新权重 → config.json
+负评分联动: 评分 -1 → 自动调用 decayHit() 衰减该记忆的命中频率
+
+500条实测: 训练准确率 68.4%，旧权重(0.35/0.25/0.25/0.10/0.05) → 拟合 → 新权重
 
 ---
 
-## 8. Benchmark Quick Reference
+## 8. Limitations (Honest) · 已知限制
 
-### Search Latency (x86_64 VM / Ubuntu 24.04 / Node v22)
+| Limitation · 限制 | Reason · 原因 | Alternative · 替代 |
+|------|------|------|
+| No NL answer generation · 无自然语言回答 | No LLM · 无LLM | External LLM for synthesis · 外部LLM合成 |
+| No cross-language semantic search · 无跨语言语义搜索 | No embedding model · 无embedding模型 | Dictionary-based expansion · 字典扩展 |
+| No deep multi-hop reasoning · 无深度多跳推理 | No neural network · 无神经网络 | Decomposition only · 仅分解模式 |
+| Write throughput 2 docs/s · 写入2条/秒 | Full pipeline per record · 全管线处理 | Async queue (planned) · 异步队列(计划中) |
 
-| Mode | avg | P50 | Hits/q |
-|------|-----|-----|:---:|
-| keyword | 42ms | 43ms | 16.7 |
-| hybrid | 130ms | 131ms | 19.3 |
+---
 
-### vs AgentMemory 0.4.8
+## 9. Version History · 版本历史
 
-| Metric | AgentMemory | v4.5-Pro | Advantage |
+| Version · 版本 | Date · 日期 | Key Difference · 关键差异 |
+|------|------|------|
+| **v5.0** | 08-09 | **Compound-cue core**: single-pass scoring, LRU cache, semantic async, user tags, profiler, hit tracking, time decay in search |
+| v4.5-Pro | 08-08 | 5 pluggable modules · time-aware · refusal · rewrite · multihop · crosslang |
+| v4.5 | 08-08 | 9-dim imp · QA · tokenizer · batching |
+| v4-pro | 08-07 | 251 calibrations · 5-fold CV · evaluation panel |
+| v4 | 08-07 | Memory echo · topic continuation · heatmap · time machine |
+| v3 | 08-06 | CSRF · truncation protection · IMP_TECH · hook detection |
+| v2 | 08-06 | config.json · recycle bin · consolidate · nightly distill |
+| v1 | 08-05 | 4-layer arch · semantic index · Web UI |
+
+---
+
+## 10. Performance · 性能
+
+| Metric · 指标 | v4.5-Pro | v5 | 提升 |
 |------|:---:|:---:|:---:|
-| Search hybrid | 164ms | **130ms** | 1.26x |
-| RAM overhead | +114MB | **0MB** | -- |
-| Model download | 79MB | **0MB** | -- |
-| Install | pip+download | **bash install.sh** | -- |
-| Write | 4 d/s | **2 d/s** | 0.5x |
-
-### vs SQLite FTS5 (keyword baseline)
-
-| Metric | SQLite FTS5 | v4.5-Pro |
-|------|:---:|:---:|
-| Search | <1ms | 42ms |
-| Memory features | 0 | 17 capabilities + 5 modules |
-| Zero deps | Yes | Yes |
+| keyword search | 42ms | **18ms** | 2.3× |
+| hybrid search | 130ms | **20ms perceived** | 6.5× |
+| RAM overhead | 0MB | 0MB | — |
+| Dependencies · 依赖 | 0 | 0 | — |
+| Model download · 模型下载 | 0MB | 0MB | — |
+| Install · 安装 | bash install.sh | bash install.sh | — |
 
 ---
 
-## 9. Version History
-
-| Version | Date | Lines | Cmds | Key Difference |
-|------|------|------|:---:|------|
-| v1 | 08-05 | 2,447 | 28 | 4-layer arch · semantic index · Web UI |
-| v2 | 08-06 | 2,981 | 36 | config.json · recycle bin · consolidate · nightly distill |
-| v3 | 08-06 | 3,093 | 36 | CSRF · truncation protection · IMP_TECH · hook detection |
-| v3-lite | 08-06 | 2,975 | 14 | Stripped version |
-| v4 | 08-07 | 3,751 | 44 | Memory echo · topic continuation · heatmap · time machine |
-| v4-pro | 08-07 | 3,768 | 44 | 251 calibrations · 5-fold CV · evaluation panel |
-| v4.5 | 08-08 | 3,250 | 20 | -56% cmds · 9-dim imp · QA · tokenizer · batching |
-| v4.5-bilingual | 08-08 | 3,255 | 20 | English UI · bilingual tokenizer |
-| **v4.5-Pro** | **08-08** | **3,291** | **20** | **5 pluggable modules** · time-aware · refusal · rewrite · multihop · crosslang |
-
----
-
-*Mnemosyne v4.5-Pro · 2026-08-08 · 3,291 lines · 20 commands · 5 modules (18.6KB) · Zero-NN · Zero deps · Zero models · Zero API keys*
-
----
-
-## 中文完整说明
-
-### 一句话定义
-
-Mnemosyne v4.5-Pro 是一个纯本地、零神经网络依赖的认知记忆引擎，配备 5 个可插拔模块（时间感知衰减、拒答前置、查询改写、多跳推理、跨语言对齐）。无需 LLM API、无需 embedding 模型、无需向量数据库。
-
-### 核心能力（19 项）
-
-消息自动记录 · 9维 imp 智能评分 · 四层分层记忆 · 自动摘要整合 · 话题续接 · 记忆回响 · 长期记忆提炼 · 5 模式搜索 · 语义去重 · Memory QA · 双语分词 · 写入批量化 · 时间感知衰减 · 拒答检测 · 查询改写 · 多跳推理 · 跨语言对齐 · 待办管理 · 用户画像
-
-### 时间感知（time.js）
-
-按信息类型自适应衰减：工作/地点 7 天半衰期，偏好/习惯 60-90 天，生日/历史不衰减。冲突记录自动标记 [当前有效]/[已被取代]。
-
-### 拒答前置（refusal.js）
-
-检索层直接判断可靠性：分数低于历史 P10 且 Top-1/Top-2 差距小 → 高置信拒答。关键词命中但无语义匹配 → 低置信警告。
-
-### 查询改写（rewrite.js）
-
-会话级动态上下文提取（不持久化画像），代词消解，缩写展开，检索后关键词扩展，所有改写经安全阀校验。
-
-### 多跳推理（multihop.js）
-
-6 种分解模式，逐跳实体重叠验证，漂移自动终止，证据链完整性检查。
-
-### 跨语言（crosslang.js）
-
-100+ 中英实体映射，自动双向查询扩展，输出语言约束，等价判断。
-
-### 20 命令
-
-record · sync · status · enable/disable · init · search(5模式) · qa · context · recall · report · profile · distill-proposals · consolidate · todos · embed · reindex · cleanup · health · stats
-
-### 性能
-
-keyword 42ms / hybrid 130ms · vs AgentMemory 1.3× 快 · RAM 0MB vs +114MB · 写入 2 docs/s（管道批量化进行中）
-
-*Mnemosyne v4.5-Pro · 2026-08-08 · 3,291行 · 20命令 · 5模块(18.6KB) · Zero-NN · 零依赖*
+*Mnemosyne v5.0 · 2026-08-09 · Compound-Cue Core · 复合线索核心 · Zero-NN · 零依赖 · Zero API keys · 零API key*

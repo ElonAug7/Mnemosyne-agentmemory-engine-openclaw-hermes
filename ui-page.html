@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Mnemosyne v4.5-Pro · Xiaozhao Memory</title>
+<title>Mnemosyne v5 · 小爪记忆引擎</title>
 <style>
 :root{--bg:#0f1319;--card:#181f29;--card2:#1e2733;--fg:#e6e9ef;--dim:#8b95a5;--acc:#4da3ff;--ok:#3ecf8e;--warn:#f5a623;--err:#e06c5c;--line:#2a323e}
 *{box-sizing:border-box;scrollbar-width:thin;scrollbar-color:var(--line) transparent}
@@ -67,7 +67,7 @@ pre{white-space:pre-wrap;word-break:break-word;font-size:13px;background:#10151c
 <body>
 <header>
   <img src="/api/logo" style="height:28px;border-radius:5px;vertical-align:middle" alt="小爪">
-  <div><h1>Mnemosyne <span style="font-size:10px;color:var(--dim);font-weight:400">v4.5-Pro</span></h1></div>
+  <div><h1>Mnemosyne <span style="font-size:10px;color:var(--dim);font-weight:400">v5</span></h1><div style="font-size:9px;color:var(--dim);opacity:.6">全量存储 · 精准回忆</div></div>
   <div class="spacer"></div>
   <span class="badge" id="lang-toggle" onclick="toggleLang()" style="cursor:pointer;margin-right:8px">🌐 EN</span>
   <span class="badge on" id="badge" data-lang="active">● Active</span>
@@ -83,7 +83,7 @@ pre{white-space:pre-wrap;word-break:break-word;font-size:13px;background:#10151c
       <div class="tool-row">
         <input type="search" id="search" placeholder="🔍 Search files..." data-lang="searchFile">
         <select id="search-mode" style="background:var(--card2);color:var(--fg);border:1px solid var(--line);border-radius:7px;padding:5px 8px;font-size:11px">
-          <option value="file">📁 文件</option><option value="hybrid">🧠 内容</option>
+          <option value="file">📁 文件</option><option value="hybrid">🔍 搜索</option>
         </select>
       </div>
       <div class="filter-row" id="layer-filter"></div>
@@ -123,7 +123,7 @@ pre{white-space:pre-wrap;word-break:break-word;font-size:13px;background:#10151c
 <div id="trash-list"></div>
 <div style="margin-top:10px;display:flex;gap:8px"><button class="btn" onclick="closeTrash()">关闭</button><button class="btn" style="color:var(--err)" onclick="if(confirm('确定清空？')){fetch('/api/trash').then(r=>r.json()).then(d=>{if(d.items)d.items.forEach(i=>apiPost('/api/trash/purge',{id:i.trashId}));toast('已清空');showTrash()})}">清空</button></div></div></div>
 
-<div style="position:fixed;bottom:4px;right:16px;font-size:8px;color:var(--dim);opacity:.3;z-index:1">🦞 v4 Pro · POST+CSRF</div>
+<div style="position:fixed;bottom:4px;right:16px;font-size:8px;color:var(--dim);opacity:.3;z-index:1">🦞 v5 · Compound-Cue</div>
 
 <script>
 "use strict";
@@ -133,7 +133,7 @@ const L = {
   en: {
     all:'All', workbench:'Workbench', daily:'Daily', chat:'Chat Logs', index:'Index',
     medium:'Medium', longterm:'Long-term', todos:'Todos', other:'Other',
-    search:'Search files...', files:'📁 Files', content:'🧠 Content',
+    search:'Search files...', files:'📁 Files', content:'🔍 Search',
     refresh:'🔄 Refresh', trash:'🗑 Trash', clean:'🧹 Clean', idxBtn:'📑 Index',
     todoPlaceholder:'✏️ Add todo...', todoBtn:'📋 Todos', report:'📊 Report', profile:'👤 Profile',
     active:'● Active', paused:'● Paused',
@@ -158,7 +158,7 @@ const L = {
   zh: {
     all:'全部', workbench:'工作台', daily:'今日摘要', chat:'对话记录', index:'索引',
     medium:'中期归档', longterm:'长期知识', todos:'待办', other:'其他',
-    search:'搜索文件…', files:'📁 文件', content:'🧠 内容',
+    search:'搜索文件…', files:'📁 文件', content:'🔍 搜索',
     refresh:'🔄 刷新', trash:'🗑 回收站', clean:'🧹 清理', idxBtn:'📑 索引',
     todoPlaceholder:'✏️ 添加待办…', todoBtn:'📋 待办', report:'📊 报告', profile:'👤 画像',
     active:'● 已开启', paused:'● 已暂停',
@@ -380,7 +380,7 @@ async function doneTodo(id){try{const r=await apiPost("/api/todos/done",{id:Stri
 async function v4Context(){
   try{const todos=await api("/api/todos");let h="<h3>📋 待办清单</h3>";if(todos.todos&&todos.todos.length){h+="<ul>";for(const t of todos.todos)h+="<li style='margin:4px 0;display:flex;align-items:center;gap:8px'><span style='flex:1'>"+esc2(t.text)+" <span style='color:var(--dim);font-size:10px'>#"+t.id+"</span></span><button class='btn sm' style='color:var(--ok)' onclick='doneTodo("+t.id+")'>✓</button></li>";h+="</ul>"}else h+="<p style='color:var(--ok)'>✨ 全部完成！</p>";$("content").innerHTML='<div class="mdview">'+h+'</div>';toast("📋 已加载")}catch(e){toast("失败",true)}
 }
-async function v4Report(){try{const d=await api("/api/status"),todos=await api("/api/todos");let h="<h3>📊 "+t("report")+"</h3>";h+="<p>🔄 "+d.turns+" "+t("turns")+" · 💬 "+d.totalMessages+" "+t("msgs")+" · ⚡ "+(d.highImpMsgs||0)+" "+t("highImp")+"</p>";h+="<p>🧩 "+t("consolidations")+" "+(d.autoConsolidations||0)+" · 📋 "+(todos.open||0)+" "+t("todos")+"</p>";h+="<p>🧠 "+t("semantic")+" "+(d.semanticIndex?d.semanticIndex.items+" items":t("notBuilt"))+"</p>";$("content").innerHTML='<div class="mdview">'+h+'</div>';toast(t("generated"))}catch(e){toast("失败",true)}}
+async function v4Report(){try{const d=await api("/api/status"),todos=await api("/api/todos");let h="<h3>📊 "+t("report")+"</h3>";h+="<p>🔄 "+d.turns+" "+t("turns")+" · 💬 "+d.totalMessages+" "+t("msgs")+" · ⚡ "+(d.highImpMsgs||0)+" "+t("highImp")+"</p>";h+="<p>🧩 "+t("consolidations")+" "+(d.autoConsolidations||0)+" · 📋 "+(todos.open||0)+" "+t("todos")+"</p>";h+="<p>📚 "+t("semantic")+" "+(d.semanticIndex?d.semanticIndex.items+" items":t("notBuilt"))+"</p>";$("content").innerHTML='<div class="mdview">'+h+'</div>';toast(t("generated"))}catch(e){toast("失败",true)}}
 async function v4Profile(){
   try{
     const r=await fetch("/api/file?p=memory/profile.md").then(r=>r.json());

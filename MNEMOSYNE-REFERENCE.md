@@ -284,10 +284,70 @@ recalibrate --apply        →  写入 config.json，即时生效
 
 ---
 
-## 9. Version History · 版本历史
+## 9. Mnemosyne Elite — Hermes / Cross-Platform Adapter · 跨平台适配
+
+> **engine.js 零改动**。Elite 通过子进程包装、环境变量注入、路径标准化实现全平台兼容。
+
+### Platform Adapter · 平台适配 (`elite/platform.js`)
+
+| Platform · 平台 | Detection · 检测 | Path Handling · 路径处理 |
+|------|------|------|
+| Windows (MSYS/MinGW) | `MSYSTEM` / `MINGW_PREFIX` / `TERM_PROGRAM=mintty` | `/c/Users/...` → `C:\Users\...` |
+| Windows (WSL) | `/proc/sys/fs/binfmt_misc/WSLInterop` | WSL ↔ Windows translation |
+| macOS | `process.platform === 'darwin'` | Native POSIX |
+| Linux | `process.platform === 'linux'` | Native POSIX |
+
+### Environment Abstraction · 环境变量抽象
+
+```
+MNEMOSYNE_ROOT  →  (Priority 1, Elite recommended)
+HERMES_WORKSPACE →  (Priority 2, Hermes platform)
+OPENCLAW_WORKSPACE → (Priority 3, OpenClaw backward compat)
+~/.mnemosyne     →  (Default fallback)
+```
+
+### Hermes Bridge · Hermes 桥接 (`elite/hermes-bridge.js`)
+
+```bash
+# 回复前一体化（recall + context + memoryInjection）
+hermes-bridge.js pre-reply --query "用户消息"
+
+# 回复后双记录
+hermes-bridge.js post-reply --user "用户消息" --assistant "完整回复"
+
+# 极速预检（~10ms，检查是否有历史）
+hermes-bridge.js quick-check --query "用户消息"
+```
+
+Hermes Bridge 输出全部为 JSON，Agent 可直接解析。所有命令等效于调用 engine.js 对应功能，仅增加输出格式化和错误处理。
+
+### Install · 安装
+
+```bash
+cd tools/memory-engine/elite
+bash install-elite.sh --hermes --skill-dir /path/to/hermes/skills
+```
+
+安装后 Skill 文件中的相对路径自动替换为绝对路径，确保 Hermes Agent 在任意 cwd 下可调用。
+
+### Elite CLI · 精英命令
+
+| Command · 命令 | Function · 功能 |
+|------|------|
+| `diag` | 人可读平台诊断报告 |
+| `platform-info` | JSON 格式完整诊断 + 引擎状态 |
+| `stats+` | 聚合统计（status + stats + health 三合一） |
+| `init+` | 安全初始化（含路径验证，MSYS 兜底建议） |
+| `self-check` | 4 项自检：路径 + 引擎 + 目录 + 权限 |
+| `bridge` | Hermes 桥接模式入口 |
+
+---
+
+## 10. Version History · 版本历史
 
 | Version · 版本 | Date · 日期 | Key Difference · 关键差异 |
 |------|------|------|
+| **v5.1-elite** | 08-11 | **Cross-platform adapter + Hermes Bridge**: `elite/` layer, platform path normalizer, Hermes Skill auto-install, `pre-reply`/`post-reply`/`quick-check` commands, engine.js zero change |
 | **v5.0** | 08-09 | **Compound-cue core**: single-pass scoring, LRU cache, semantic async, user tags, profiler, hit tracking, time decay in search |
 | v4.5-Pro | 08-08 | 5 pluggable modules · time-aware · refusal · rewrite · multihop · crosslang |
 | v4.5 | 08-08 | 9-dim imp · QA · tokenizer · batching |
@@ -312,4 +372,4 @@ recalibrate --apply        →  写入 config.json，即时生效
 
 ---
 
-*Mnemosyne v5.0 · 2026-08-09 · Compound-Cue Core · 复合线索核心 · Zero-NN · 零依赖 · Zero API keys · 零API key*
+*Mnemosyne v5.1-elite · 2026-08-11 · Compound-Cue Core + Cross-Platform · 复合线索核心 + 跨平台适配 · Zero-NN · Zero deps · Zero API keys*

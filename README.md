@@ -160,9 +160,52 @@ keyword ~18ms / hybrid ~20ms 感知 · vs v4.5-Pro: keyword 2.3× 快, hybrid 6.
 
 ---
 
+## 🏆 Mnemosyne Elite — Hermes / Cross-Platform Edition
+
+> **不改 engine.js 一行代码**，适配 Windows (MSYS/MinGW) · macOS · Linux · Hermes
+
+### Quick Install
+
+```bash
+cd tools/memory-engine/elite
+bash install-elite.sh --hermes --skill-dir /path/to/hermes/skills
+```
+
+一键完成: 环境变量 · 目录初始化 · 引擎自检 · Hermes Skill 安装（路径自动替换为绝对路径）
+
+### What Elite Adds · Elite 增强
+
+| 特性 | engine.js | Elite |
+|------|:--:|:--:|
+| 环境变量 | `OPENCLAW_WORKSPACE` only | `MNEMOSYNE_ROOT` / `HERMES_WORKSPACE` / 兼容旧名 |
+| MSYS/MinGW 路径 | ❌ 静默失败 | ✅ 自动映射 `/c/` → `C:\` |
+| WSL 检测 | — | ✅ 自动识别 |
+| Hermes Skill | — | ✅ 自动安装 + 路径替换 |
+| Hermes Bridge | — | ✅ `pre-reply` / `post-reply` / `quick-check` 一键式 |
+| 强制记忆协议 | SOUL/AGENTS.md | ✅ Skill 文件内含完整协议 |
+| 路径诊断 | — | ✅ `self-check` / `diag` |
+
+### 平台适配
+
+```bash
+# 引擎状态
+node tools/memory-engine/elite/mnemosyne-elite.js diag
+
+# Hermes Agent 调用
+node tools/memory-engine/elite/hermes-bridge.js pre-reply --query "用户消息"
+node tools/memory-engine/elite/hermes-bridge.js post-reply --user "..." --assistant "..."
+
+# 所有 engine.js 命令照常可用
+node tools/memory-engine/elite/mnemosyne-elite.js search --query "关键词"
+```
+
+详见 `elite/README.md` · Hermes Skill 文档: `elite/hermes-skill.md`
+
+---
+
 ## Docs · 参考文档
 
 - `MNEMOSYNE-REFERENCE.md` — 完整技术参考 · Full Technical Reference
 - `CHANGELOG.md` — 版本历史 · Version History
 
-*Mnemosyne v5.0 · 2026-08-09 · Compound-Cue Core · Zero-NN · 零依赖 · 零 API key*
+*Mnemosyne v5.1-elite · 2026-08-11 · Compound-Cue Core + Cross-Platform Adapter · Zero-NN · 零依赖 · 零 API key*

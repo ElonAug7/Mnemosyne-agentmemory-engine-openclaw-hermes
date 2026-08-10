@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Mnemosyne v5 · 小爪记忆引擎</title>
+<title>Mnemosyne v5.1 Elite · 小爪记忆引擎</title>
 <style>
 :root{--bg:#0f1319;--card:#181f29;--card2:#1e2733;--fg:#e6e9ef;--dim:#8b95a5;--acc:#4da3ff;--ok:#3ecf8e;--warn:#f5a623;--err:#e06c5c;--line:#2a323e}
 *{box-sizing:border-box;scrollbar-width:thin;scrollbar-color:var(--line) transparent}
@@ -62,12 +62,36 @@ pre{white-space:pre-wrap;word-break:break-word;font-size:13px;background:#10151c
 .sidebar-toggle{position:absolute;left:280px;top:50%;transform:translateY(-50%);z-index:30;width:16px;height:44px;background:var(--card);border:1px solid var(--line);border-left:none;border-radius:0 7px 7px 0;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:10px;color:var(--dim);transition:left .3s}
 .sidebar.collapsed ~ .sidebar-toggle{left:40px}
 .sidebar-toggle:hover{color:var(--acc);background:var(--card2)}
+/* Special Thanks 全屏覆盖 */
+.thanks-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(5,8,14,.97);z-index:2000;display:none;flex-direction:column;align-items:center;justify-content:center;backdrop-filter:blur(10px)}
+.thanks-overlay.show{display:flex;animation:thanksIn .4s ease-out}
+@keyframes thanksIn{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:scale(1)}}
+.thanks-back{position:absolute;top:20px;left:20px;background:var(--card2);border:1px solid var(--line);color:var(--fg);border-radius:50%;width:40px;height:40px;cursor:pointer;font-size:18px;display:flex;align-items:center;justify-content:center;transition:all .2s;z-index:10}
+.thanks-back:hover{background:var(--acc);color:#fff;transform:rotate(-90deg)}
+.thanks-content{text-align:center;max-width:600px;padding:40px 20px;user-select:none}
+.thanks-content h2{font-size:28px;margin:0 0 8px;background:linear-gradient(135deg,var(--acc),#a78bfa,#f472b6);background-clip:text;-webkit-background-clip:text;-webkit-text-fill-color:transparent;animation:thanksShimmer 3s ease-in-out infinite}
+@keyframes thanksShimmer{0%,100%{filter:brightness(1)}50%{filter:brightness(1.3)}}
+.thanks-content .subtitle{color:var(--dim);font-size:13px;margin-bottom:40px;opacity:.7}
+.thanks-card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:24px 28px;margin:12px 0;text-align:left;transition:all .3s;animation:cardIn .6s ease-out both}
+.thanks-card:nth-child(2){animation-delay:.15s}.thanks-card:nth-child(3){animation-delay:.3s}
+@keyframes cardIn{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
+.thanks-card:hover{border-color:var(--acc);box-shadow:0 0 30px rgba(77,163,255,.08);transform:translateY(-2px)}
+.thanks-card .name{font-size:16px;font-weight:600;color:var(--fg)}
+.thanks-card .role{font-size:11px;color:var(--dim);margin-top:2px}
+.thanks-card .desc{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.5;opacity:.8}
+.thanks-card .badge-row{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap}
+.thanks-tag{font-size:10px;padding:2px 10px;border-radius:12px;background:var(--card2);color:var(--acc);border:1px solid var(--line)}
+.thanks-footer{color:var(--dim);font-size:11px;margin-top:40px;opacity:.5;animation:fadeInUp 1s ease-out .5s both}
+@keyframes fadeInUp{from{opacity:0;transform:translateY(15px)}to{opacity:1;transform:translateY(0)}}
+.thanks-stars{position:absolute;pointer-events:none;z-index:0}
+.thanks-star{position:absolute;width:2px;height:2px;background:var(--acc);border-radius:50%;animation:starFloat 3s ease-in-out infinite;opacity:.3}
+@keyframes starFloat{0%,100%{transform:translateY(0);opacity:.1}50%{transform:translateY(-20px);opacity:.5}}
 </style>
 </head>
 <body>
 <header>
   <img src="/api/logo" style="height:28px;border-radius:5px;vertical-align:middle" alt="小爪">
-  <div><h1>Mnemosyne <span style="font-size:10px;color:var(--dim);font-weight:400">v5</span></h1><div style="font-size:9px;color:var(--dim);opacity:.6">全量存储 · 精准回忆</div></div>
+  <div><h1>Mnemosyne <span style="font-size:10px;color:var(--dim);font-weight:400">v5.1 Elite</span></h1><div style="font-size:9px;color:var(--dim);opacity:.6">全量存储 · 精准回忆 · 跨平台</div></div>
   <div class="spacer"></div>
   <span class="badge" id="lang-toggle" onclick="toggleLang()" style="cursor:pointer;margin-right:8px">🌐 EN</span>
   <span class="badge on" id="badge" data-lang="active">● Active</span>
@@ -100,6 +124,9 @@ pre{white-space:pre-wrap;word-break:break-word;font-size:13px;background:#10151c
         <button class="btn sm" onclick="v4Report()" data-lang="report">📊 Report</button>
         <button class="btn sm" onclick="v4Profile()" data-lang="profile">👤 Profile</button>
       </div>
+      <div class="tool-row" style="margin-top:5px;padding-top:6px;border-top:1px solid var(--line)">
+        <button class="btn sm" onclick="showThanks()" style="background:linear-gradient(135deg,#2a1a3a,#1a2a3a);color:#c4a5e0;border-color:#3a2a4a;width:100%">🙏 Special Thanks</button>
+      </div>
     </div>
   </div>
   <div class="content-area">
@@ -123,7 +150,31 @@ pre{white-space:pre-wrap;word-break:break-word;font-size:13px;background:#10151c
 <div id="trash-list"></div>
 <div style="margin-top:10px;display:flex;gap:8px"><button class="btn" onclick="closeTrash()">关闭</button><button class="btn" style="color:var(--err)" onclick="if(confirm('确定清空？')){fetch('/api/trash').then(r=>r.json()).then(d=>{if(d.items)d.items.forEach(i=>apiPost('/api/trash/purge',{id:i.trashId}));toast('已清空');showTrash()})}">清空</button></div></div></div>
 
-<div style="position:fixed;bottom:4px;right:16px;font-size:8px;color:var(--dim);opacity:.3;z-index:1">🦞 v5 · Compound-Cue</div>
+<!-- Special Thanks 全屏覆盖 -->
+<div id="thanks-overlay" class="thanks-overlay" onclick="if(event.target===this)closeThanks()">
+  <div class="thanks-stars" id="thanks-stars"></div>
+  <button class="thanks-back" onclick="closeThanks()" title="返回">←</button>
+  <div class="thanks-content">
+    <h2>Special Thanks 🙏</h2>
+    <div class="subtitle">Mnemosyne v5.1 Elite · 跨平台记忆引擎</div>
+
+    <div class="thanks-card">
+      <div class="name">🎬 桦染霜</div>
+      <div class="role">首批跨平台测试者 · Hermes 适配验证</div>
+      <div class="desc">在 Windows (MSYS/MinGW) + Hermes 环境下完成了 Mnemosyne v5 的完整适配验证。发现并报告了 MSYS 路径映射、环境变量抽象、监控层缺失等关键问题，为 Elite 版提供了宝贵的第三方测试数据。</div>
+      <div class="badge-row">
+        <span class="thanks-tag">🧪 测试先锋</span>
+        <span class="thanks-tag">🪟 Windows</span>
+        <span class="thanks-tag">🔷 Hermes</span>
+        <span class="thanks-tag">📋 反馈报告</span>
+      </div>
+    </div>
+
+    <div class="thanks-footer">— 感谢每一位让 Mnemosyne 变得更好的你 —</div>
+  </div>
+</div>
+
+<div style="position:fixed;bottom:4px;right:16px;font-size:8px;color:var(--dim);opacity:.3;z-index:1">🦞 v5.1 Elite · Compound-Cue</div>
 
 <script>
 "use strict";
@@ -412,6 +463,11 @@ async function showTrash(){const m=$("trash-modal");if(!m)return;m.style.display
 async function restoreFile(id){try{const r=await apiPost("/api/trash/restore",{id});if(r.restored){toast("♻ 已还原");showTrash();allFiles=await api("/api/files");renderFiles()}else toast("失败",true)}catch(e){toast("失败",true)}}
 async function purgeFile(id){if(!confirm("彻底删除？"))return;try{const r=await apiPost("/api/trash/purge",{id});if(r.purged){toast("✕ 已删除");showTrash()}else toast("失败",true)}catch(e){toast("失败",true)}}
 function closeTrash(){var m=$("trash-modal");if(m)m.style.display="none"}
+
+/* Special Thanks 全屏覆盖 */
+function showThanks(){const o=$("thanks-overlay");if(!o)return;o.classList.add("show");initStars();document.body.style.overflow="hidden"}
+function closeThanks(){const o=$("thanks-overlay");if(!o)return;o.classList.remove("show");document.body.style.overflow=""}
+function initStars(){const c=$("thanks-stars");if(!c||c.children.length)return;for(let i=0;i<40;i++){const s=document.createElement("div");s.className="thanks-star";s.style.left=Math.random()*100+"%";s.style.top=Math.random()*100+"%";s.style.animationDelay=Math.random()*3+"s";s.style.animationDuration=(2+Math.random()*4)+"s";c.appendChild(s)}}
 
 $("badge").addEventListener("click",async()=>{const s=await api("/api/status");await api("/api/"+(s.enabled?"disable":"enable"));toast(s.enabled?"⏸ 已暂停":"▶ 已恢复");loadAll()});
 $("btn-refresh").addEventListener("click",()=>{toast("🔄 已刷新");loadAll()});

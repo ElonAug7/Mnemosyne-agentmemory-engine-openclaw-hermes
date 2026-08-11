@@ -26,7 +26,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENGINE_DIR="$(dirname "$SCRIPT_DIR")"
 ELITE_DIR="$SCRIPT_DIR"
-VERSION="v5.1.0-elite"
+VERSION="v6.0.0"
 
 # ---- 0. 参数解析 ----
 MEM_ROOT="${MNEMOSYNE_ROOT:-$HOME/.mnemosyne}"

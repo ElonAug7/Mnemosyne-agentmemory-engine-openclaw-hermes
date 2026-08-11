@@ -1,4 +1,4 @@
-# Mnemosyne v5 Elite — Hermes Skill
+# Mnemosyne v6 — Hermes Skill
 
 > ⚠️ 这不是可选的"建议"。这是本 Agent 的核心记忆基础设施。
 

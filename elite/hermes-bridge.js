@@ -39,7 +39,7 @@ const fs = require('fs');
 
 const ENGINE_PATH = path.resolve(__dirname, '..', 'engine.js');
 const platform = require('./platform');
-const VERSION = 'v5.1.0-elite';
+const VERSION = 'v6.0.0';
 
 // ============================================================
 // 引擎调用

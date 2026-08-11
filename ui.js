@@ -602,6 +602,6 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`Mnemosyne v5 UI http://${HOST}:${PORT} (workspace: ${ROOT})`);
+  console.log(`Mnemosyne v6 UI http://${HOST}:${PORT} (workspace: ${ROOT})`);
   if (UI_TOKEN) console.log(`  Token: ${UI_TOKEN}  (export MEMORY_UI_TOKEN=${UI_TOKEN} to fix)`);
 });

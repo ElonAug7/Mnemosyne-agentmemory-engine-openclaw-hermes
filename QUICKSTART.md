@@ -1,4 +1,4 @@
-# 🧠 Mnemosyne v5 — Hermes 版快速上手
+# 🧠 Mnemosyne v6 — Hermes/OpenClaw 版快速上手
 
 > 一个命令，一分钟，永久记忆。
 
@@ -13,7 +13,7 @@
 
 ```bash
 # 1. 进入引擎目录
-cd Mnemosyne-v5-for-hermes
+cd Mnemosyne-v6
 
 # 2. 一键安装
 bash elite/install-elite.sh --hermes --skill-dir <你的-Hermes-skills-目录>
@@ -112,7 +112,7 @@ node elite/mnemosyne-elite.js diag     # 看解析后的实际路径
 ## 目录结构
 
 ```
-Mnemosyne-v5-for-hermes/
+Mnemosyne-v6/
 ├── elite/                  ← Hermes 增强层（入口）
 │   ├── install-elite.sh    ← 一键安装
 │   ├── mnemosyne-elite.js  ← Elite CLI
@@ -135,4 +135,4 @@ Mnemosyne-v5-for-hermes/
 
 ---
 
-**版本**: v5.1-elite · **引擎**: v5.0.0 · **许可**: MIT
+**版本**: v6 · **引擎**: v6.0.0 · **许可**: MIT

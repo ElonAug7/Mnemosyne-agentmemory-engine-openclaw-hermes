@@ -3,95 +3,218 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Mnemosyne v5.1 Elite · 小爪记忆引擎</title>
+<title>Mnemosyne v6 · 小爪记忆引擎</title>
 <style>
-:root{--bg:#0f1319;--card:#181f29;--card2:#1e2733;--fg:#e6e9ef;--dim:#8b95a5;--acc:#4da3ff;--ok:#3ecf8e;--warn:#f5a623;--err:#e06c5c;--line:#2a323e}
-*{box-sizing:border-box;scrollbar-width:thin;scrollbar-color:var(--line) transparent}
-::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px}
-body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.6 system-ui,"PingFang SC","Microsoft YaHei",sans-serif;overflow:hidden;height:100vh}
-header{padding:10px 18px;background:var(--card);display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--line);z-index:20}
-header h1{font-size:16px;margin:0;font-weight:600}
-header .sub{color:var(--dim);font-size:11px}
+:root{
+  --bg:#020814;--bg2:#040e1e;
+  --s1:rgba(8,18,36,.93);--s2:rgba(12,24,46,.86);--s3:rgba(16,30,54,.8);
+  --fg:#c8d6e8;--dim:#6e84a8;--dim2:#485e80;
+  --b1:rgba(100,140,200,.07);--b2:rgba(100,140,200,.13);--b3:rgba(100,140,200,.22);
+  --accent:#5ea8f8;--accent2:#4090e0;--accent3:#90c8ff;
+  --amber:#e8b868;--amber2:#c49848;--teal:#68c8b8;
+  --ok:#68c898;--warn:#e8b868;--err:#d87880;
+  --glow:0 0 50px rgba(94,168,248,.04);
+  --font-mono:"SF Mono","JetBrains Mono","Fira Code","Cascadia Code",monospace;
+}
+*{box-sizing:border-box;scrollbar-width:thin;scrollbar-color:var(--b2) transparent}
+::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--b2);border-radius:8px}
+
+body{margin:0;background:var(--bg);color:var(--fg);
+  font:13.5px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+  overflow:hidden;height:100vh;font-weight:450;
+  -webkit-font-smoothing:antialiased}
+
+/* CRT 扫描线 — 极致复古感 */
+body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
+  background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,.015) 2px,rgba(0,0,0,.015) 4px)}
+body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
+  background:
+    radial-gradient(ellipse 55% 45% at 20% 15%,rgba(64,144,224,.03),transparent 55%),
+    radial-gradient(ellipse 40% 35% at 78% 78%,rgba(232,184,104,.015),transparent 50%),
+    radial-gradient(ellipse 50% 50% at 50% 50%,rgba(20,40,64,.02),transparent 65%)}
+
+/* 顶栏 — CRT 终端感 */
+header{padding:10px 20px;background:var(--s1);
+  backdrop-filter:blur(24px) saturate(140%);-webkit-backdrop-filter:blur(24px) saturate(140%);
+  display:flex;align-items:center;gap:12px;border-bottom:2px solid rgba(64,144,224,.15);z-index:20;position:relative}
+header h1{font-size:15px;margin:0;font-weight:650;letter-spacing:.01em;color:var(--fg)}
+header h1 b{font-weight:700;color:var(--accent);font-family:var(--font-mono);font-size:13px}
 header .spacer{flex:1}
-.badge{display:inline-block;padding:3px 12px;border-radius:20px;font-size:11px;cursor:pointer;user-select:none;transition:all .2s}
-.badge.on{background:#16352a;color:var(--ok)}.badge.off{background:#3a2420;color:var(--err)}
-.main{display:flex;height:calc(100vh - 47px);position:relative}
-.sidebar{width:280px;min-width:280px;background:var(--card);border-right:1px solid var(--line);display:flex;flex-direction:column;transition:all .3s;overflow:hidden}
+
+.badge{display:inline-block;padding:4px 14px;border-radius:20px;font-size:10px;cursor:pointer;
+  user-select:none;transition:all .25s ease;border:1px solid var(--b2);font-weight:550;background:var(--s3);
+  font-family:var(--font-mono);text-transform:uppercase;letter-spacing:.04em}
+.badge.on{border-color:rgba(104,200,152,.3);color:var(--ok);background:rgba(104,200,152,.06)}
+.badge.off{border-color:rgba(216,120,128,.3);color:var(--err);background:rgba(216,120,128,.06)}
+.badge:hover{border-color:var(--b3);transform:translateY(-1px);box-shadow:0 4px 16px rgba(0,0,0,.2)}
+
+.main{display:flex;height:calc(100vh - 47px);position:relative;z-index:1}
+
+.sidebar{width:310px;min-width:310px;background:var(--s2);
+  backdrop-filter:blur(28px) saturate(160%);-webkit-backdrop-filter:blur(28px) saturate(160%);
+  border-right:1px solid var(--b2);display:flex;flex-direction:column;transition:width .3s ease;overflow:hidden;position:relative}
 .sidebar.collapsed{width:40px;min-width:40px}
 .sidebar.collapsed .side-inner{opacity:0;pointer-events:none}
-.side-inner{padding:10px;display:flex;flex-direction:column;height:100%;transition:opacity .2s}
-.stats{display:flex;gap:12px;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--line)}
-.stat b{font-size:18px;display:block;color:var(--acc)}.stat span{color:var(--dim);font-size:10px}
+.side-inner{padding:14px 12px 12px 14px;display:flex;flex-direction:column;height:100%;transition:opacity .15s;z-index:1}
+
+.stats{display:flex;gap:14px;margin-bottom:12px;padding-bottom:12px;border-bottom:2px solid rgba(232,184,104,.08)}
+.stat b{font-size:26px;display:block;font-weight:650;line-height:1;color:var(--accent3);
+  font-family:var(--font-mono);letter-spacing:-.5px}
+.stat span{color:var(--dim);font-size:9px;text-transform:uppercase;letter-spacing:.06em;font-weight:500;opacity:.75}
+
 .tool-row{display:flex;gap:5px;align-items:center;margin-bottom:7px;flex-wrap:wrap}
-input[type=search],input[type=text]{background:var(--card2);border:1px solid var(--line);color:var(--fg);border-radius:7px;padding:6px 10px;font-size:12px;outline:none;width:100%}
-input:focus{border-color:var(--acc)}
-.btn{background:var(--card2);color:var(--fg);border:1px solid var(--line);border-radius:7px;padding:6px 12px;cursor:pointer;font-size:12px;white-space:nowrap;transition:all .15s;display:inline-flex;align-items:center;gap:4px}
-.btn:hover{background:#2a3442;border-color:#3a4552;transform:scale(1.03)}
-.btn.on{background:var(--acc);color:#fff;border-color:var(--acc)}
-.btn.sm{padding:3px 8px;font-size:11px}
+input,select{background:rgba(8,18,36,.6);border:1px solid var(--b2);color:var(--fg);
+  border-radius:8px;padding:7px 11px;font-size:11.5px;outline:none;width:100%;transition:all .2s}
+input:focus,select:focus{border-color:var(--accent2);box-shadow:0 0 0 3px rgba(64,144,224,.08)}
+input::placeholder{color:var(--dim2);font-weight:400;opacity:.5;font-style:italic}
+
+.btn{background:rgba(8,18,36,.7);color:var(--dim);border:1px solid var(--b2);border-radius:8px;
+  padding:5px 10px;cursor:pointer;font-size:11px;white-space:nowrap;transition:all .2s ease;
+  display:inline-flex;align-items:center;gap:4px;font-weight:500}
+.btn:hover{background:rgba(64,144,224,.08);color:var(--accent3);border-color:var(--b3)}
+.btn:active{transform:scale(.97)}
+.btn.on{background:rgba(64,144,224,.1);color:var(--accent);border-color:rgba(64,144,224,.25)}
+.btn.sm{padding:4px 8px;font-size:10px;border-radius:6px}
+
+/* 底部控制盘 — 复古终端操作面板 */
+.control-deck{margin-top:auto;padding-top:10px;border-top:2px solid rgba(232,184,104,.1);display:flex;flex-direction:column;gap:6px}
+.control-deck .deck-label{font-size:8px;color:var(--amber);text-transform:uppercase;letter-spacing:.12em;
+  font-family:var(--font-mono);opacity:.6;text-align:center;margin-bottom:2px}
+.deck-row{display:flex;gap:4px}
+.deck-btn{flex:1;background:rgba(8,18,36,.8);border:1px solid var(--b2);border-radius:6px;
+  padding:8px 4px;cursor:pointer;font-size:9.5px;color:var(--dim);text-align:center;
+  transition:all .2s ease;display:flex;flex-direction:column;align-items:center;gap:3px;
+  font-family:var(--font-mono);position:relative;overflow:hidden}
+.deck-btn::after{content:'';position:absolute;top:0;left:50%;transform:translateX(-50%);width:60%;height:1px;
+  background:linear-gradient(90deg,transparent,var(--b2),transparent)}
+.deck-btn:hover{background:rgba(64,144,224,.06);color:var(--accent3);border-color:var(--b3)}
+.deck-btn:active{background:rgba(64,144,224,.1);transform:scale(.96)}
+.deck-btn .icon{font-size:15px;line-height:1}
+.deck-btn .label{font-size:8px;text-transform:uppercase;letter-spacing:.06em;opacity:.7}
+
+/* 琥珀色高亮行 */
+.deck-row.accent .deck-btn{border-color:rgba(232,184,104,.15)}
+.deck-row.accent .deck-btn:hover{background:rgba(232,184,104,.06);color:var(--amber);border-color:rgba(232,184,104,.25)}
+.deck-btn.primary{background:rgba(64,144,224,.06);border-color:rgba(64,144,224,.15);color:var(--accent3)}
+.deck-btn.primary:hover{background:rgba(64,144,224,.12);color:var(--accent)}
+
+/* 文件列表 */
 .filelist{flex:1;overflow:auto;min-height:0}
-.fileitem{display:flex;align-items:center;padding:6px 8px;border-radius:7px;cursor:pointer;font-size:12px;transition:all .1s;gap:5px}
-.fileitem:hover{background:#232b36;transform:translateX(2px)}
-.fileitem.active{background:#253347;color:var(--acc)}
-.fileitem .meta{color:var(--dim);font-size:10px;margin-left:auto;flex-shrink:0}
-.layer-tag{font-size:9px;padding:1px 5px;border-radius:4px;flex-shrink:0}
-.layer-tag.工作台{background:#3a1e4a;color:#ce93d8}.layer-tag.今日摘要{background:#1e3a4a;color:#4fc3f7}
-.layer-tag.对话记录{background:#2a2a3a;color:#90a4ae}.layer-tag.索引{background:#2d2a4a;color:#b39ddb}
-.layer-tag.中期归档{background:#3a2e1e;color:#ffb74d}.layer-tag.长期知识{background:#1e3a2a;color:#81c784}
-.layer-tag.系统{background:#333;color:#ff8a65}.layer-tag.回收站{background:#4a1e1e;color:#ef9a9a}
-.layer-tag.待办{background:#2e3a1e;color:#ffd54f}.layer-tag.其他{background:#333;color:#999}
+.fileitem{display:flex;align-items:center;padding:5px 10px;border-radius:6px;cursor:pointer;
+  font-size:11.5px;transition:all .12s;gap:6px;margin:1px 0;font-weight:450}
+.fileitem:hover{background:rgba(64,144,224,.05)}
+.fileitem.active{background:rgba(64,144,224,.08);color:var(--accent3);font-weight:550}
+.fileitem .meta{color:var(--dim2);font-size:9.5px;margin-left:auto;flex-shrink:0;
+  font-family:var(--font-mono);opacity:.7}
+
+.layer-tag{font-size:8px;padding:2px 6px;border-radius:8px;flex-shrink:0;font-weight:550;
+  letter-spacing:.02em;border:1px solid transparent;font-family:var(--font-mono)}
+.layer-tag.工作台{background:rgba(94,168,248,.08);color:#98c8f8;border-color:rgba(94,168,248,.12)}
+.layer-tag.今日摘要{background:rgba(64,144,224,.06);color:#88bcf8;border-color:rgba(64,144,224,.1)}
+.layer-tag.对话记录{background:rgba(100,140,200,.04);color:#8898b4;border-color:rgba(100,140,200,.07)}
+.layer-tag.索引{background:rgba(94,168,248,.06);color:#b4d4f8;border-color:rgba(94,168,248,.1)}
+.layer-tag.中期归档{background:rgba(232,184,104,.06);color:#d8c098;border-color:rgba(232,184,104,.1)}
+.layer-tag.长期知识{background:rgba(104,200,152,.06);color:#90d8b0;border-color:rgba(104,200,152,.1)}
+.layer-tag.系统{background:rgba(100,140,200,.03);color:#c89888;border-color:rgba(100,140,200,.06)}
+.layer-tag.回收站{background:rgba(216,120,128,.06);color:#dc9c9c;border-color:rgba(216,120,128,.1)}
+.layer-tag.待办{background:rgba(232,184,104,.06);color:#dcc8a0;border-color:rgba(232,184,104,.1)}
+.layer-tag.其他{background:rgba(100,140,200,.03);color:#8898b4;border-color:rgba(100,140,200,.06)}
+
 .filter-row{display:flex;gap:4px;margin:5px 0;flex-wrap:wrap}
-.filter-btn{font-size:10px;padding:2px 9px;border-radius:12px;border:1px solid var(--line);background:var(--card2);color:var(--dim);cursor:pointer;transition:all .15s}
-.filter-btn.on{background:var(--acc);color:#fff;border-color:var(--acc)}
-.content-area{flex:1;display:flex;flex-direction:column;overflow:hidden;position:relative}
-.crumb{display:flex;gap:5px;align-items:center;padding:7px 14px;font-size:11px;color:var(--dim);background:var(--card);border-bottom:1px solid var(--line);min-height:32px}
-.viewport{flex:1;overflow:auto;padding:14px}
-pre{white-space:pre-wrap;word-break:break-word;font-size:13px;background:#10151c;border-radius:8px;padding:12px;border:1px solid var(--line);margin:0;max-height:100%}
-.mdview{background:#10151c;border-radius:8px;padding:14px 16px;border:1px solid var(--line);font-size:13px}
-.mdview h1,.mdview h2,.mdview h3{color:var(--acc);margin:14px 0 6px}.mdview h1{font-size:18px;border-bottom:1px solid var(--line);padding-bottom:6px}.mdview h2{font-size:15px}.mdview h3{font-size:13px}
-.mdview code{background:#222b38;padding:2px 5px;border-radius:3px;font-size:11px}
-.mdview pre{border:none;padding:8px;background:#0d1117}.mdview pre code{background:none;padding:0}
-.mdview blockquote{border-left:3px solid var(--acc);margin:6px 0;padding:3px 10px;color:var(--dim)}
-.mdview table{border-collapse:collapse;font-size:12px}.mdview th,.mdview td{border:1px solid var(--line);padding:4px 8px}.mdview th{background:var(--card2)}
-.mdview ul,.mdview ol{padding-left:22px}.mdview hr{border:none;border-top:1px solid var(--line);margin:10px 0}
-.chat .msg{margin:8px 0;max-width:85%}.chat .msg .who{font-size:10px;color:var(--dim)}.chat .msg .body{padding:8px 10px;border-radius:10px;font-size:12px;white-space:pre-wrap;word-break:break-word}
-.chat .user{margin-right:auto}.chat .user .body{background:#253347}.chat .assistant{margin-left:auto}.chat .assistant .body{background:#1c2a24}
-.toast{position:fixed;top:12px;left:50%;transform:translateX(-50%);background:var(--card2);border:1px solid var(--line);padding:8px 20px;border-radius:8px;font-size:12px;z-index:99;display:none;box-shadow:0 4px 20px rgba(0,0,0,.5)}
-.toast.err{border-color:var(--err);color:var(--err)}
-.empty{color:var(--dim);text-align:center;padding:50px 0;font-size:13px}
-.sidebar-toggle{position:absolute;left:280px;top:50%;transform:translateY(-50%);z-index:30;width:16px;height:44px;background:var(--card);border:1px solid var(--line);border-left:none;border-radius:0 7px 7px 0;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:10px;color:var(--dim);transition:left .3s}
+.filter-btn{font-size:9.5px;padding:3px 10px;border-radius:14px;border:1px solid var(--b2);
+  background:rgba(8,18,36,.5);color:var(--dim2);cursor:pointer;transition:all .2s;font-weight:500}
+.filter-btn:hover{border-color:var(--b3);color:var(--dim)}
+.filter-btn.on{background:rgba(64,144,224,.12);color:var(--accent);border-color:rgba(64,144,224,.25)}
+
+.content-area{flex:1;display:flex;flex-direction:column;overflow:hidden;position:relative;z-index:1}
+.crumb{display:flex;gap:7px;align-items:center;padding:6px 20px;font-size:10.5px;color:var(--dim2);
+  background:rgba(8,18,36,.75);border-bottom:1px solid var(--b1);min-height:32px;font-weight:450;
+  font-family:var(--font-mono);letter-spacing:.02em}
+.viewport{flex:1;overflow:auto;padding:24px 28px}
+
+pre{white-space:pre-wrap;word-break:break-word;font-size:12.5px;background:rgba(2,8,20,.5);
+  border-radius:10px;padding:16px;border:1px solid var(--b2);margin:0;
+  font-family:var(--font-mono);line-height:1.8;color:var(--fg)}
+
+.mdview{background:var(--s3);border:1px solid var(--b2);border-radius:12px;font-size:13.5px;
+  position:relative;overflow:hidden;padding:22px 28px;font-weight:450}
+.mdview::before{content:'';position:absolute;top:0;left:0;width:100%;height:2px;
+  background:linear-gradient(90deg,transparent,var(--amber2),var(--accent2),transparent);opacity:.4;border-radius:2px}
+.mdview h1,.mdview h2,.mdview h3{font-weight:650;margin:20px 0 8px}
+.mdview h1{font-size:18px;border-bottom:1px solid var(--b2);padding-bottom:10px;color:var(--accent3)}
+.mdview h2{font-size:15px;color:var(--fg)}.mdview h3{font-size:13px;color:var(--dim);font-weight:600}
+.mdview code{background:rgba(64,144,224,.08);padding:2px 7px;border-radius:5px;font-size:11.5px;
+  font-family:var(--font-mono);color:var(--accent3);border:1px solid rgba(64,144,224,.12)}
+.mdview pre{border:1px solid var(--b2);padding:14px;background:rgba(2,8,20,.4);border-radius:8px}
+.mdview pre code{background:none;padding:0;border:none}
+.mdview blockquote{border-left:3px solid var(--amber);margin:8px 0;padding:6px 16px;color:var(--dim);
+  background:rgba(232,184,104,.02);border-radius:0 8px 8px 0;font-style:italic;font-size:13px}
+.mdview table{border-collapse:collapse;font-size:11.5px;width:100%}
+.mdview th,.mdview td{border:1px solid var(--b1);padding:6px 12px;text-align:left}
+.mdview th{background:rgba(64,144,224,.05);font-weight:650;color:var(--accent3);font-size:10.5px;
+  font-family:var(--font-mono);text-transform:uppercase;letter-spacing:.04em}
+.mdview ul,.mdview ol{padding-left:22px}
+.mdview hr{border:none;border-top:1px solid var(--b1);margin:16px 0}
+.mdview a{color:var(--accent);text-decoration:none;border-bottom:1px solid rgba(94,168,248,.25)}
+.mdview a:hover{border-bottom-color:var(--accent)}
+
+.chat .msg{margin:10px 0;max-width:78%}
+.chat .msg .who{font-size:9.5px;color:var(--dim2);margin-bottom:3px;font-weight:600;
+  letter-spacing:.04em;font-family:var(--font-mono);text-transform:uppercase}
+.chat .msg .body{padding:10px 14px;border-radius:12px;font-size:12.5px;white-space:pre-wrap;
+  word-break:break-word;line-height:1.7;font-weight:450}
+.chat .user{margin-right:auto}.chat .user .body{background:rgba(64,144,224,.05);
+  border:1px solid rgba(64,144,224,.12);border-bottom-left-radius:3px}
+.chat .assistant{margin-left:auto;margin-right:3%}.chat .assistant .body{background:rgba(104,200,184,.04);
+  border:1px solid rgba(104,200,184,.12);border-bottom-right-radius:3px}
+
+.toast{position:fixed;top:16px;left:50%;transform:translateX(-50%);background:var(--s2);
+  backdrop-filter:blur(28px);-webkit-backdrop-filter:blur(28px);border:1px solid var(--b2);
+  padding:10px 24px;border-radius:12px;font-size:11.5px;z-index:99;display:none;
+  box-shadow:0 12px 40px rgba(2,8,20,.5),var(--glow);font-weight:550}
+.toast.err{border-color:rgba(216,120,128,.3);color:var(--err)}
+
+.empty{color:var(--dim2);text-align:center;padding:100px 0;font-size:13px;opacity:.5;font-weight:450}
+
+.sidebar-toggle{position:absolute;left:310px;top:50%;transform:translateY(-50%);z-index:30;
+  width:12px;height:40px;background:var(--s2);border:1px solid var(--b2);border-left:none;
+  border-radius:0 8px 8px 0;cursor:pointer;display:flex;align-items:center;justify-content:center;
+  font-size:9px;color:var(--dim2);transition:all .3s ease}
 .sidebar.collapsed ~ .sidebar-toggle{left:40px}
-.sidebar-toggle:hover{color:var(--acc);background:var(--card2)}
-/* Special Thanks 全屏覆盖 */
-.thanks-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(5,8,14,.97);z-index:2000;display:none;flex-direction:column;align-items:center;justify-content:center;backdrop-filter:blur(10px)}
-.thanks-overlay.show{display:flex;animation:thanksIn .4s ease-out}
-@keyframes thanksIn{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:scale(1)}}
-.thanks-back{position:absolute;top:20px;left:20px;background:var(--card2);border:1px solid var(--line);color:var(--fg);border-radius:50%;width:40px;height:40px;cursor:pointer;font-size:18px;display:flex;align-items:center;justify-content:center;transition:all .2s;z-index:10}
-.thanks-back:hover{background:var(--acc);color:#fff;transform:rotate(-90deg)}
-.thanks-content{text-align:center;max-width:600px;padding:40px 20px;user-select:none}
-.thanks-content h2{font-size:28px;margin:0 0 8px;background:linear-gradient(135deg,var(--acc),#a78bfa,#f472b6);background-clip:text;-webkit-background-clip:text;-webkit-text-fill-color:transparent;animation:thanksShimmer 3s ease-in-out infinite}
-@keyframes thanksShimmer{0%,100%{filter:brightness(1)}50%{filter:brightness(1.3)}}
-.thanks-content .subtitle{color:var(--dim);font-size:13px;margin-bottom:40px;opacity:.7}
-.thanks-card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:24px 28px;margin:12px 0;text-align:left;transition:all .3s;animation:cardIn .6s ease-out both}
-.thanks-card:nth-child(2){animation-delay:.15s}.thanks-card:nth-child(3){animation-delay:.3s}
-@keyframes cardIn{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
-.thanks-card:hover{border-color:var(--acc);box-shadow:0 0 30px rgba(77,163,255,.08);transform:translateY(-2px)}
-.thanks-card .name{font-size:16px;font-weight:600;color:var(--fg)}
-.thanks-card .role{font-size:11px;color:var(--dim);margin-top:2px}
-.thanks-card .desc{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.5;opacity:.8}
-.thanks-card .badge-row{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap}
-.thanks-tag{font-size:10px;padding:2px 10px;border-radius:12px;background:var(--card2);color:var(--acc);border:1px solid var(--line)}
-.thanks-footer{color:var(--dim);font-size:11px;margin-top:40px;opacity:.5;animation:fadeInUp 1s ease-out .5s both}
-@keyframes fadeInUp{from{opacity:0;transform:translateY(15px)}to{opacity:1;transform:translateY(0)}}
-.thanks-stars{position:absolute;pointer-events:none;z-index:0}
-.thanks-star{position:absolute;width:2px;height:2px;background:var(--acc);border-radius:50%;animation:starFloat 3s ease-in-out infinite;opacity:.3}
-@keyframes starFloat{0%,100%{transform:translateY(0);opacity:.1}50%{transform:translateY(-20px);opacity:.5}}
+.sidebar-toggle:hover{color:var(--accent);border-color:var(--accent2)}
+
+.thanks-overlay{position:fixed;inset:0;background:rgba(2,8,20,.97);z-index:2000;
+  display:none;flex-direction:column;align-items:center;justify-content:center}
+.thanks-overlay.show{display:flex;animation:tkIn .35s ease-out}
+@keyframes tkIn{from{opacity:0}to{opacity:1}}
+.thanks-back{position:absolute;top:24px;left:24px;background:var(--s2);border:1px solid var(--b2);
+  color:var(--dim);border-radius:24px;width:40px;height:40px;cursor:pointer;font-size:16px;
+  display:flex;align-items:center;justify-content:center;transition:all .25s;z-index:10;font-weight:500}
+.thanks-back:hover{background:rgba(64,144,224,.12);color:var(--accent3);border-color:var(--accent2)}
+.thanks-content{text-align:center;max-width:540px;padding:40px 20px;user-select:none}
+.thanks-content h2{font-size:28px;margin:0 0 4px;font-weight:600;letter-spacing:-.01em;color:var(--accent3)}
+.thanks-content .subtitle{color:var(--dim2);font-size:12px;margin-bottom:40px;opacity:.6;font-weight:450}
+.thanks-card{background:var(--s2);border:1px solid var(--b2);border-radius:14px;padding:22px 26px;
+  margin:10px 0;text-align:left;transition:all .25s ease;position:relative;overflow:hidden}
+.thanks-card::before{content:'';position:absolute;top:50%;left:0;transform:translateY(-50%);
+  width:3px;height:35%;border-radius:3px;background:linear-gradient(180deg,var(--amber2),var(--accent2));opacity:.5}
+.thanks-card:nth-child(2){animation:cardUp .45s ease-out .1s both}
+.thanks-card:nth-child(3){animation:cardUp .45s ease-out .2s both}
+@keyframes cardUp{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:translateY(0)}}
+.thanks-card:hover{border-color:var(--b3);background:rgba(64,144,224,.03)}
+.thanks-card .name{font-size:16px;font-weight:650;color:var(--fg);padding-left:14px}
+.thanks-card .role{font-size:10.5px;color:var(--dim2);margin-top:3px;padding-left:14px;font-weight:500}
+.thanks-card .desc{font-size:12px;color:var(--dim);margin-top:8px;line-height:1.7;opacity:.75;padding-left:14px}
+.thanks-card .badge-row{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap;padding-left:14px}
+.thanks-tag{font-size:9.5px;padding:3px 10px;border:1px solid var(--b2);border-radius:10px;color:var(--accent3)}
+.thanks-footer{color:var(--dim2);font-size:11px;margin-top:44px;opacity:.35;
+  animation:cardUp .45s ease-out .3s both;font-weight:450;font-style:italic}
 </style>
 </head>
 <body>
 <header>
   <img src="/api/logo" style="height:28px;border-radius:5px;vertical-align:middle" alt="小爪">
-  <div><h1>Mnemosyne <span style="font-size:10px;color:var(--dim);font-weight:400">v5.1 Elite</span></h1><div style="font-size:9px;color:var(--dim);opacity:.6">全量存储 · 精准回忆 · 跨平台</div></div>
+  <div><h1>Mnemosyne <span style="font-size:10px;color:var(--dim);font-weight:400">v6</span></h1><div style="font-size:9px;color:var(--dim);opacity:.6">全量存储 · 精准回忆 · 跨平台</div></div>
   <div class="spacer"></div>
   <span class="badge" id="lang-toggle" onclick="toggleLang()" style="cursor:pointer;margin-right:8px">🌐 EN</span>
   <span class="badge on" id="badge" data-lang="active">● Active</span>
@@ -112,20 +235,31 @@ pre{white-space:pre-wrap;word-break:break-word;font-size:13px;background:#10151c
       </div>
       <div class="filter-row" id="layer-filter"></div>
       <div class="filelist" id="files"></div>
-      <div class="tool-row" style="margin-top:5px;padding-top:6px;border-top:1px solid var(--line)">
-        <button class="btn sm" id="btn-refresh" data-lang="refresh">🔄 Refresh</button>
-        <button class="btn sm" id="btn-trash" onclick="showTrash()" data-lang="trash">🗑 Trash</button>
-        <button class="btn sm" id="btn-suggest" onclick="showSuggestions()" style="color:var(--warn)" data-lang="clean">🧹 Clean</button>
-        <button class="btn sm" onclick="openFile('memory/index/index.md')" style="color:var(--acc)" data-lang="idxBtn">📑 Index</button>
+
+      <!-- v6.1 复古终端控制盘 -->
+      <div class="control-deck">
+        <div class="deck-label">⌘ CONTROL DECK</div>
+
+        <div class="deck-row">
+          <button class="deck-btn primary" onclick="v4Context()"><span class="icon">📋</span><span class="label" data-lang="todoBtn">Todos</span></button>
+          <button class="deck-btn" onclick="v4Report()"><span class="icon">📊</span><span class="label" data-lang="report">Report</span></button>
+          <button class="deck-btn" onclick="v4Profile()"><span class="icon">👤</span><span class="label" data-lang="profile">Profile</span></button>
+        </div>
+
+        <div class="deck-row">
+          <button class="deck-btn" id="btn-refresh"><span class="icon">🔄</span><span class="label" data-lang="refresh">Refresh</span></button>
+          <button class="deck-btn" onclick="showTrash()"><span class="icon">🗑</span><span class="label" data-lang="trash">Trash</span></button>
+          <button class="deck-btn" onclick="showSuggestions()"><span class="icon">🧹</span><span class="label" data-lang="clean">Clean</span></button>
+          <button class="deck-btn" onclick="openFile('memory/index/index.md')"><span class="icon">📑</span><span class="label" data-lang="idxBtn">Index</span></button>
+        </div>
+
+        <div class="deck-row accent">
+          <button class="deck-btn" onclick="showThanks()" style="grid-column:1/-1"><span class="icon">🙏</span><span class="label">Special Thanks</span></button>
+        </div>
       </div>
-      <div class="tool-row">
-        <input type="text" id="todo-input" placeholder="✏️ Add todo..." data-lang="todoPlaceholder" style="flex:1;min-width:120px;font-size:11px;padding:5px 8px" onkeydown="if(event.key==='Enter')addTodo()">
-        <button class="btn sm" style="color:var(--ok)" onclick="v4Context()" data-lang="todoBtn">📋 Todos</button>
-        <button class="btn sm" onclick="v4Report()" data-lang="report">📊 Report</button>
-        <button class="btn sm" onclick="v4Profile()" data-lang="profile">👤 Profile</button>
-      </div>
-      <div class="tool-row" style="margin-top:5px;padding-top:6px;border-top:1px solid var(--line)">
-        <button class="btn sm" onclick="showThanks()" style="background:linear-gradient(135deg,#2a1a3a,#1a2a3a);color:#c4a5e0;border-color:#3a2a4a;width:100%">🙏 Special Thanks</button>
+
+      <div class="tool-row" style="margin-top:4px">
+        <input type="text" id="todo-input" placeholder="✏️ Add todo..." data-lang="todoPlaceholder" style="flex:1" onkeydown="if(event.key==='Enter')addTodo()">
       </div>
     </div>
   </div>
@@ -156,12 +290,12 @@ pre{white-space:pre-wrap;word-break:break-word;font-size:13px;background:#10151c
   <button class="thanks-back" onclick="closeThanks()" title="返回">←</button>
   <div class="thanks-content">
     <h2>Special Thanks 🙏</h2>
-    <div class="subtitle">Mnemosyne v5.1 Elite · 跨平台记忆引擎</div>
+    <div class="subtitle">Mnemosyne v6 · 跨平台记忆引擎</div>
 
     <div class="thanks-card">
       <div class="name">🎬 桦染霜</div>
       <div class="role">首批跨平台测试者 · Hermes 适配验证</div>
-      <div class="desc">在 Windows (MSYS/MinGW) + Hermes 环境下完成了 Mnemosyne v5 的完整适配验证。发现并报告了 MSYS 路径映射、环境变量抽象、监控层缺失等关键问题，为 Elite 版提供了宝贵的第三方测试数据。</div>
+      <div class="desc">在 Windows (MSYS/MinGW) + Hermes 环境下完成了 Mnemosyne v6 的完整适配验证。发现并报告了 MSYS 路径映射、环境变量抽象、监控层缺失等关键问题，为 Elite 版提供了宝贵的第三方测试数据。</div>
       <div class="badge-row">
         <span class="thanks-tag">🧪 测试先锋</span>
         <span class="thanks-tag">🪟 Windows</span>
@@ -174,7 +308,7 @@ pre{white-space:pre-wrap;word-break:break-word;font-size:13px;background:#10151c
   </div>
 </div>
 
-<div style="position:fixed;bottom:4px;right:16px;font-size:8px;color:var(--dim);opacity:.3;z-index:1">🦞 v5.1 Elite · Compound-Cue</div>
+<div style="position:fixed;bottom:4px;right:16px;font-size:8px;color:var(--dim);opacity:.3;z-index:1">🦞 v6 · Compound-Cue</div>
 
 <script>
 "use strict";
@@ -239,13 +373,17 @@ function toggleLang() {
   applyLanguage();
 }
 function applyLanguage() {
-  // Update all elements with data-lang attribute
   document.querySelectorAll('[data-lang]').forEach(el => {
     const key = el.getAttribute('data-lang');
+    if (!key) return;
+    const text = t(key);
     if (el.placeholder !== undefined && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) {
-      el.placeholder = t(key);
+      el.placeholder = text;
+    } else if (el.classList.contains('label')) {
+      // 控制盘按钮标签：只取文字部分，去 emoji
+      el.textContent = text.replace(/^[^\w\u4e00-\u9fff]+/,'').trim();
     } else {
-      el.textContent = t(key);
+      el.textContent = text;
     }
   });
   // Update search placeholder based on mode

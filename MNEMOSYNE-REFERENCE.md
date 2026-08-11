@@ -1,4 +1,4 @@
-# 🦞 Mnemosyne v5 — Complete Technical Reference · 完整技术参考
+# 🦞 Mnemosyne v6 — Complete Technical Reference · 完整技术参考
 
 > **全量存储，精准回忆。不模拟遗忘，只模拟注意。**
 > Store everything. Recall precisely. No simulated forgetting, only simulated attention.
@@ -9,9 +9,9 @@
 
 ## 0. One-Line Definition · 一句话定义
 
-Mnemosyne v5 is a **purely local, zero-neural-network cognitive memory engine** built on **compound-cue theory**. Storage is machine-like (everything saved, nothing forgotten). Retrieval is human-like: it computes a single compound familiarity score (imp + recency decay + keyword match + hit frequency) to surface only what matters in this moment. The rest stays in the library — never deleted, just not shown right now.
+Mnemosyne v6 is a **purely local, zero-neural-network cognitive memory engine** built on **compound-cue theory**. Storage is machine-like (everything saved, nothing forgotten). Retrieval is human-like: it computes a single compound familiarity score (imp + recency decay + keyword match + hit frequency) to surface only what matters in this moment. The rest stays in the library — never deleted, just not shown right now.
 
-Mnemosyne v5 是一个纯本地、零神经网络依赖的认知记忆引擎，基于**复合线索理论**。存储像机器（全量保存，永不丢失），检索像人（复合线索评分，情境选择性提取）。10 万条记忆都在库里，此刻只递给你需要的那一条。
+Mnemosyne v6 是一个纯本地、零神经网络依赖的认知记忆引擎，基于**复合线索理论**。存储像机器（全量保存，永不丢失），检索像人（复合线索评分，情境选择性提取）。10 万条记忆都在库里，此刻只递给你需要的那一条。
 
 ---
 
@@ -49,7 +49,7 @@ Mnemosyne v5 是一个纯本地、零神经网络依赖的认知记忆引擎，�
 
 ## 2. Architecture · 架构
 
-### Compound-Cue Scoring Model · 复合线索评分模型 (v5)
+### Compound-Cue Scoring Model · 复合线索评分模型
 
 ```
 familiarity = 0.35·imp + 0.25·recency + 0.25·keyword + 0.10·hitFreq + 0.05·layerW
@@ -85,7 +85,7 @@ consolidate → topic tags + quality self-assessment → medium summary blocks
 nightly distill (22:30) → proposals → agent review → MEMORY.md
 ```
 
-### v5 Module Pipeline · 模块管线
+### Module Pipeline · 模块管线
 
 ```
 cmdQA(query)
@@ -144,7 +144,7 @@ Cap: 1.00
 
 ---
 
-## 4. Search: Compound-Cue Powered · 复合线索搜索 (v5)
+## 4. Search: Compound-Cue Powered · 复合线索搜索
 
 ### Modes · 模式
 
@@ -156,7 +156,7 @@ Cap: 1.00
 | recent | Same, short-term bias · 偏重短期 | ~18ms | Recent focus · 查最近 |
 | history | Same, long-term bias · 偏重长期 | ~18ms | Historical lookup · 查历史 |
 
-### v5 Latency Comparison · 延迟对比
+### Latency Comparison · 延迟对比
 
 | Mode · 模式 | v4.5-Pro | v5 | Improvement · 提升 |
 |------|:---:|:---:|:---:|
@@ -165,7 +165,7 @@ Cap: 1.00
 
 ---
 
-## 5. Modules · 模块 (v5)
+## 5. Modules · 模块
 
 ### time.js — Dynamic Half-Life Decay · 动态半衰期衰减
 
@@ -234,12 +234,12 @@ Three-tier system · 三档系统:
 |------|------|
 | `record` | `--role user\|assistant --text "..." [--tags tag1,tag2]` |
 | `sync` | `[--quick]` |
-| `status` | Engine status + cache + v5 features · 引擎状态+缓存+v5特性 |
+| `status` | Engine status + cache + v6 features · 引擎状态+缓存+v5特性 |
 | `enable/disable` | Toggle recording · 开关记录 |
 | `init` | Initialize directory structure · 初始化 |
 | `search` | `--query "..." --mode keyword\|semantic\|hybrid\|recent\|history [--profile]` |
-| **`rate`** | `--result <n> --score +1\|-1` — rate last search result · 评分搜索结果 **v5.2** |
-| **`recalibrate`** | `[--apply]` — fit weights from ratings · 从评分拟合权重 **v5.2** |
+| **`rate`** | `--result <n> --score +1\|-1` — rate last search result · 评分搜索结果 **v6** |
+| **`recalibrate`** | `[--apply]` — fit weights from ratings · 从评分拟合权重 **v6** |
 | `qa` | `--query "..."` (with rewrite + refusal + multihop + time + crosslang) |
 | `context` | Session context (task + todos + questions + topics) · 会话上下文 |
 | `recall` | `--query "..."` — auto-writes to last-recall.json |
@@ -256,7 +256,7 @@ Three-tier system · 三档系统:
 | `profile-debug` | Cache stats + profiler report · 缓存+探查器报告 |
 | `tags` | `--query "..."` — search by tags · 按标签搜索 |
 
-### 用户反馈权重自校准 · RLHF-lite (v5.2)
+### 用户反馈权重自校准 · RLHF-lite (v6)
 
 ```bash
 search --query "关键词"  →  自动缓存结果到 last-search.json
@@ -372,4 +372,4 @@ bash install-elite.sh --hermes --skill-dir /path/to/hermes/skills
 
 ---
 
-*Mnemosyne v5.1-elite · 2026-08-11 · Compound-Cue Core + Cross-Platform · 复合线索核心 + 跨平台适配 · Zero-NN · Zero deps · Zero API keys*
+*Mnemosyne v6.0.0 · 2026-08-11 · Compound-Cue Core + Cross-Platform · 复合线索核心 + 跨平台适配 · Zero-NN · Zero deps · Zero API keys*

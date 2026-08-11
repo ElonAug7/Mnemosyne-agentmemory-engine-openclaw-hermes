@@ -1,4 +1,4 @@
-# 🧠 Mnemosyne Elite v5.1
+# 🧠 Mnemosyne Elite v6
 
 > 跨平台分层记忆引擎增强版 — 适配 Windows · macOS · Linux · OpenClaw · Hermes
 
@@ -14,7 +14,7 @@
 
 ```
 tools/memory-engine/
-├── engine.js              ← 一行不改，v5.0.0 核心引擎
+├── engine.js              ← 一行不改，v6.0.0 核心引擎
 ├── elite/                 ← Elite 增强层
 │   ├── platform.js        ← 跨平台路径适配器
 │   ├── mnemosyne-elite.js ← Elite CLI（engine.js 包装器）
@@ -173,5 +173,5 @@ node tools/memory-engine/elite/mnemosyne-elite.js diag
 
 ## 版本
 
-- `v5.1.0-elite` — 初始发布
-- 兼容 engine.js v5.0.0
+- `v6.0.0` — 初始发布
+- 兼容 engine.js v6.0.0

@@ -1,13 +1,13 @@
-# 🦞 Mnemosyne v5 — Compound-Cue Memory Engine · 复合线索记忆引擎
+# 🦞 Mnemosyne v6 — Cognitive Memory Engine Memory Engine · 复合线索记忆引擎
 
 > **全量存储，精准回忆。不模拟遗忘，只模拟注意。**
 > Store everything like a machine. Recall like a human.
 
-> v5: Single-pass compound-cue scoring instead of multi-merge. Zero deps, zero models.
+> v6: Cognitive memory engine compound-cue scoring instead of multi-merge. Zero deps, zero models.
 
 ---
 
-## What's New in v5 · v5 新特性
+## Version History 新特性
 
 | 特性 Feature | 说明 Description | 实测 Result |
 |------|------|:--:|
@@ -41,9 +41,8 @@
 ## Install · 安装
 
 ```bash
-cp -r Mnemosyne-v5 ~/.openclaw/workspace/tools/
-cd ~/.openclaw/workspace/tools/Mnemosyne-v5 && bash install.sh
-openclaw gateway restart
+cp -r Mnemosyne-v6 ~/.openclaw/workspace/tools/
+cd ~/.openclaw/workspace/tools/Mnemosyne-v6 && bash install.sh
 ```
 
 安装后自动注入强制协议到 SOUL.md 和 AGENTS.md。
@@ -138,7 +137,7 @@ engine.js recalibrate --apply      # 写入 config.json，下次搜索生效
 
 ### 一句话定义
 
-Mnemosyne v5 是一个纯本地、零神经网络依赖的认知记忆引擎，基于**复合线索理论**（compound-cue theory）构建。单次评分替代多路 merge，配备 5 个可插拔模块。无需 LLM API、无需 embedding 模型、无需向量数据库。
+Mnemosyne v6 是一个纯本地、零神经网络依赖的认知记忆引擎，基于**复合线索理论**（compound-cue theory）构建。单次评分替代多路 merge，配备 5 个可插拔模块。无需 LLM API、无需 embedding 模型、无需向量数据库。
 
 ### 核心公式
 

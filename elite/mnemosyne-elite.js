@@ -26,7 +26,7 @@ const ENGINE_DIR = path.resolve(__dirname, '..');
 const ENGINE_PATH = path.join(ENGINE_DIR, 'engine.js');
 const platform = require('./platform');
 
-const VERSION = 'v5.1.0-elite';
+const VERSION = 'v6.0.0';
 
 // ============================================================
 // 引擎调用

@@ -1,30 +1,15 @@
 #!/usr/bin/env node
 /**
- * Mnemosyne v5 — OpenClaw 可移植分层记忆引擎
- *
- * 定位: 全量存储，精准回忆。不模拟遗忘，只模拟注意。
- *
- * 存储层: 像机器 — 全量保存，永不丢失
- * 检索层: 像人 — 复合线索评分，情境选择性提取
+ * Mnemosyne v4.5-Pro — OpenClaw 可移植分层记忆引擎
  *
  * 命名来源：Mnemosyne（谟涅摩绪涅），希腊记忆女神，缪斯之母。
  *
  * 架构：raw / working / inject / medium / long / index
  *
- * v5 核心升级：复合线索评分模型（compound-cue theory）
- *   - 单次评分替代多路 merge：imp + recency + keyword + frequency 统一公式
- *   - time.js 半衰期衰减正式接入搜索排序
- *   - 内存热区缓存（LRU，最近 7 天）
- *   - 语义异步化（keyword 先出，semantic 后补）
- *   - 用户自定义标签
- *   - 命中频率追踪（忆阻器式动态权重）
- *
  * P0: 短期记忆三层 + 工作记忆 + 结构化压缩 + memory.md边界 + 清理
  * P1: 多路并行召回 + hook补偿 + 敏感信息脱敏
  * P2: embedding可选 + UI安全 + 恢复/索引重建
  */
-
-const VERSION = 'v6.1.0';
 'use strict';
 
 const fs = require('fs');
@@ -33,126 +18,6 @@ const os = require('os');
 const http = require('http');
 const zlib = require('zlib');
 const { execFile, execFileSync } = require('child_process');
-
-// ============================================================
-// v5: 性能探查器（轻量，零依赖，通过 --profile 开关启用）
-// ============================================================
-
-const PROFILER_ENABLED = process.argv.includes('--profile') || process.env.MNEMOSYNE_PROFILE === '1';
-const PROFILER_TRACES = [];
-
-function profileStart(label) {
-  if (!PROFILER_ENABLED) return () => {};
-  const start = process.hrtime.bigint();
-  return () => {
-    const elapsed = Number(process.hrtime.bigint() - start) / 1e6; // ms
-    PROFILER_TRACES.push({ label, elapsedMs: Math.round(elapsed * 1000) / 1000, ts: Date.now() });
-    if (elapsed > 50) console.error(`[profile:warn] ${label}: ${elapsed.toFixed(1)}ms ⚠️`);
-    else if (PROFILER_ENABLED) console.error(`[profile] ${label}: ${elapsed.toFixed(2)}ms`);
-    return elapsed;
-  };
-}
-
-function profileReport() {
-  if (!PROFILER_ENABLED && !PROFILER_TRACES.length) return null;
-  const byLabel = {};
-  for (const t of PROFILER_TRACES) {
-    if (!byLabel[t.label]) byLabel[t.label] = [];
-    byLabel[t.label].push(t.elapsedMs);
-  }
-  const summary = {};
-  for (const [label, vals] of Object.entries(byLabel)) {
-    vals.sort((a, b) => a - b);
-    summary[label] = {
-      count: vals.length,
-      total: Math.round(vals.reduce((a, b) => a + b, 0) * 1000) / 1000,
-      avg: Math.round(vals.reduce((a, b) => a + b, 0) / vals.length * 1000) / 1000,
-      p50: vals[Math.floor(vals.length * 0.5)],
-      p99: vals[Math.floor(vals.length * 0.99)] || vals[vals.length - 1],
-    };
-  }
-  return { traces: PROFILER_TRACES.length, summary, raw: PROFILER_TRACES.slice(0, 50) };
-}
-
-// ============================================================
-// v5: 内存热区缓存（LRU，最近 7 天，消除重复文件 I/O）
-// ============================================================
-
-const HOT_CACHE_TTL_MS = 7 * 24 * 3600 * 1000; // 7 天热区
-const HOT_CACHE_MAX_ENTRIES = 500;
-
-const memCache = {
-  _store: new Map(),           // key → { data, at, size }
-  _hits: 0, _misses: 0,
-
-  key(file, extra) { return `${file}:${extra || 'all'}`; },
-
-  get(file, extra) {
-    const k = this.key(file, extra);
-    const entry = this._store.get(k);
-    if (entry && Date.now() - entry.at < HOT_CACHE_TTL_MS) {
-      this._hits++;
-      return entry.data;
-    }
-    if (entry) this._store.delete(k); // 过期
-    this._misses++;
-    return undefined;
-  },
-
-  set(file, extra, data) {
-    const k = this.key(file, extra);
-    // 超过容量时淘汰最旧的
-    if (this._store.size >= HOT_CACHE_MAX_ENTRIES) {
-      let oldest = null, oldestAt = Infinity;
-      for (const [ek, ev] of this._store) {
-        if (ev.at < oldestAt) { oldestAt = ev.at; oldest = ek; }
-      }
-      if (oldest) this._store.delete(oldest);
-    }
-    this._store.set(k, { data, at: Date.now(), size: JSON.stringify(data).length });
-  },
-
-  invalidate(file) {
-    for (const k of this._store.keys()) {
-      if (k.startsWith(file + ':')) this._store.delete(k);
-    }
-  },
-
-  stats() {
-    const total = this._hits + this._misses;
-    return {
-      entries: this._store.size,
-      hits: this._hits, misses: this._misses,
-      hitRate: total ? Math.round(this._hits / total * 10000) / 100 + '%' : 'N/A',
-      memBytes: [...this._store.values()].reduce((s, e) => s + (e.size || 0), 0),
-    };
-  },
-
-  clear() { this._store.clear(); this._hits = 0; this._misses = 0; },
-};
-
-// 缓存读文件包装
-function cachedReadFile(filePath, extra) {
-  const cached = memCache.get(filePath, extra);
-  if (cached !== undefined) return cached;
-  let data;
-  if (filePath.endsWith('.gz')) {
-    data = zlib.gunzipSync(fs.readFileSync(filePath)).toString('utf8');
-  } else {
-    data = fs.readFileSync(filePath, 'utf8');
-  }
-  memCache.set(filePath, extra, data);
-  return data;
-}
-
-function cachedReadDir(dirPath, extra) {
-  const cached = memCache.get(dirPath, extra);
-  if (cached !== undefined) return cached;
-  let data;
-  try { data = fs.readdirSync(dirPath); } catch { data = []; }
-  memCache.set(dirPath, extra, data);
-  return data;
-}
 
 // v4.5-Pro modules — modular, pluggable, independent
 const timeMod    = (() => { try { return require('./modules/time.js'); } catch { return null; } })();
@@ -233,8 +98,6 @@ const ARCHIVE_INTERVAL_MS = 6 * 3600 * 1000; // sync 时归档检查节流
 const LOCK_FILE = path.join(D.engine, 'lockfile');
 const LOCK_TIMEOUT_MS = 120000; // 锁超时 2 分钟
 const DISTILL_PROPOSALS_FILE = path.join(D.engine, 'distill-proposals.json');
-const RATINGS_FILE = path.join(D.engine, 'ratings.json');
-const LAST_SEARCH_FILE = path.join(D.engine, 'last-search.json');
 
 // ============================================================
 // 进程锁：防止多个 cron 同时写 memory 文件（P0 安全加固）
@@ -412,62 +275,6 @@ function tokenizeChinese(text) {
   return unique.length ? unique : (s.length > 2 ? [s.slice(0, 10)] : [s]);
 }
 
-// v5.1-elite: 话题关键词提取（MemSIF TSM — 话题连贯性加分）
-// 从查询文本中提取 2-4 字的话题关键词（项目名、技术栈、概念等）
-function extractTopics(query) {
-  const s = String(query || '');
-  if (s.length < 3) return [];
-  // 中文话题词：2-4 字连续 CJK 序列
-  const cjkTopics = s.match(/[\u4e00-\u9fff]{2,4}/g) || [];
-  // 英文话题词：2+ 字母的单词
-  const enTopics = s.match(/[a-zA-Z][a-zA-Z0-9_+#-]{1,}/g) || [];
-  // 去重 + 过滤太短的
-  const STOP = new Set(['一个','这个','那个','什么','怎么','为什么','可以', '不是','已经','没有','如果','但是','因为','所以','不过','而且','然后','应该','可能']);
-  const all = [...cjkTopics, ...enTopics.map(w => w.toLowerCase())];
-  return [...new Set(all)].filter(t => !STOP.has(t) && t.length >= 2);
-}
-
-// v6.1: 同义词典（纯字典，零 LLM，可手动扩展）
-const SYNONYM_DICT = {
-  'react': ['reactjs', 'react.js'],
-  'reactjs': ['react', 'react.js'],
-  'vue': ['vuejs', 'vue.js', 'vue3'],
-  'vuejs': ['vue', 'vue.js'],
-  'node': ['nodejs', 'node.js'],
-  'nodejs': ['node', 'node.js'],
-  'js': ['javascript'],
-  'javascript': ['js'],
-  'ts': ['typescript'],
-  'typescript': ['ts'],
-  'py': ['python'],
-  'python': ['py'],
-  'ai': ['人工智能', 'artificial intelligence'],
-  'ml': ['机器学习', 'machine learning'],
-  'api': ['接口'],
-  'db': ['数据库', 'database'],
-  'ui': ['界面', '前端界面'],
-  'ux': ['用户体验'],
-  'cicd': ['部署', 'ci/cd', '持续集成'],
-  'bug': ['缺陷', '错误', '问题'],
-  'fix': ['修复', '修补'],
-  'refactor': ['重构'],
-  'perf': ['性能', 'performance', '优化'],
-};
-
-function expandSynonyms(query) {
-  const q = String(query || '').toLowerCase();
-  const words = q.match(/[\u4e00-\u9fff]+|[a-zA-Z0-9+#_.-]+/g) || [];
-  const expansions = new Set();
-  for (const w of words) {
-    const lw = w.toLowerCase();
-    if (SYNONYM_DICT[lw]) {
-      for (const s of SYNONYM_DICT[lw]) expansions.add(s);
-    }
-  }
-  if (expansions.size === 0) return q;
-  return q + ' ' + [...expansions].join(' ');
-}
-
 function importanceOf(role, text) {
   const t = String(text || '').trim();
   if (!t) return 0;
@@ -528,9 +335,11 @@ function importanceOf(role, text) {
   }
 
   // Fix 7 (v4.5): 承诺/保证语义 — "下次一定""以后肯定""保证"类语句直接推高
+  // v4.5-Pro precision: require actionable commitment, not just casual mention
+  if (/(下次一定|下次会|下次要|后面肯定|以后肯定|之后一定|我保证|我承诺|我答应|发誓|一定做到|绝对会|不会再忘|永远不会忘|永远记住|记住了|记住这个|别忘了|记着|以后每次都|从今往后|我后面|后面会|以后会|之后会)/i.test(t)) {
   // v4.5-Pro precision: only boost if commitment is actionable, not just "I'll try" or "maybe later"
   // Casual qualifiers reduce commitment weight
-  const hasQualifier = /(可能|maybe|试试|try|尽量|hopefully)/i.test(t);
+  const hasQualifier = /(可能|maybe|试试|try|尽量|hopefully|hopefully)/i.test(t);
   if (/(下次一定|下次会|下次要|后面肯定|以后肯定|之后一定|我保证|我承诺|我答应|发誓|一定做到|绝对会|不会再忘|永远不会忘|永远记住|记住了|记住这个|别忘了|记着|以后每次都|从今往后|我后面|后面会|以后会|之后会)/i.test(t)) {
     const boost = hasQualifier ? 0.15 : 0.35; // Casual qualifiers = weak commitment
     score += boost;
@@ -1294,19 +1103,7 @@ function autoConsolidate(opts = {}) {
   const minImpSum = CFG.thresholds.consolidateMinImpSum || 3.0;
   const needed = msgs.length >= minMsgs || highImpCount >= minHighImp || impSum >= minImpSum;
 
-  // v5.1: 时间兜底触发 — 即使未达 imp 阈值，超过 24h 的未处理消息强制整合
-  // 防止低活跃日的信息永久停留在 raw 层
-  let timeFallback = false;
-  if (!needed && msgs.length > 0) {
-    const oldestTs = msgs.reduce((min, m) => m.ts && m.ts < min ? m.ts : min, msgs[0].ts || nowIso());
-    const oldestAge = (Date.now() - new Date(oldestTs).getTime()) / 3600000; // hours
-    const fallbackHours = CFG.thresholds.consolidateFallbackHours || 24;
-    if (oldestAge >= fallbackHours) {
-      timeFallback = true;
-    }
-  }
-
-  if (!needed && !timeFallback) {
+  if (!needed) {
     if (!check) { s.lastConsolidateAt = nowIso(); saveState(s); }
     // P0: --retag 批量补旧块标签+质量自评
     if (opts.retag) {
@@ -1324,8 +1121,6 @@ function autoConsolidate(opts = {}) {
   }
 
   const block = buildAutoSummaryBlock(msgs);
-  // v5.1: 时间兜底摘要标记为低置信
-  if (timeFallback) block.quality = 'low-confidence (time-fallback)';
   const medFile = path.join(D.medium, today() + '.md');
   let med = fs.existsSync(medFile) ? fs.readFileSync(medFile, 'utf8') : `# ${today()} 中期摘要\n`;
   fs.writeFileSync(medFile, med.trimEnd() + '\n\n' + block.text + '\n');
@@ -1338,23 +1133,9 @@ function autoConsolidate(opts = {}) {
   s.autoConsolidations = (s.autoConsolidations || 0) + 1;
   saveState(s);
   try { appendDevLog(`自动整合 ${msgs.length} 条 → medium/${today()}.md`); } catch {}
-
-  // v5.1-elite: superseded 检测（TEPA — 新 medium 块写完后扫描旧块是否有矛盾）
-  try { checkSupersedeFromMessages(msgs); } catch {}
-
-  // v6: Muscle Memory 肌肉记忆（高频记忆编译进行为，>10次命中→自动提升到工作记忆）
-  try { promoteMuscleMemory(); } catch {}
-
-  // v6.1: 每 5 次 consolidate 运行一次关联+分块+睡眠巩固
-  if (s.autoConsolidations % 5 === 0) {
-    try { buildMemoryRelations(); } catch {}
-    try { buildTopicChunks(); } catch {}
-    try { sleepConsolidate(); } catch {}
-  }
   return {
     needed: true, written: `medium/${today()}.md`,
     messages: msgs.length, highImpCount, topics: block.topics, indexUpdated: true,
-    timeFallback: timeFallback || undefined,
   };
 }
 
@@ -1506,7 +1287,6 @@ function queryWeights(opts) {
 
 // 单层搜索结果
 function searchLayer(query, layer, opts = {}) {
-  const endProf = profileStart(`searchLayer:${layer}`);
   const terms = tokenizeChinese(query);
   const results = [];
 
@@ -1526,18 +1306,17 @@ function searchLayer(query, layer, opts = {}) {
       ];
       for (const c of candidates) {
         if (match(c.text)) {
-          results.push({ layer, sub: c.field, text: c.text.slice(0, 200), score: c.field === 'task' ? 2 : 1, imp: 0.7, ts: new Date().toISOString() });
+          results.push({ layer, sub: c.field, text: c.text.slice(0, 200), score: c.field === 'task' ? 2 : 1, imp: 0.7 });
         }
       }
     } catch {}
-    endProf(); return results;
   }
 
   if (layer === 'inject') {
-    for (const f of cachedReadDir(D.shortInject, 'search').sort().slice(-3)) {
+    for (const f of fs.readdirSync(D.shortInject).sort().slice(-3)) {
       if (!f.endsWith('.json')) continue;
       try {
-        const inj = JSON.parse(cachedReadFile(path.join(D.shortInject, f), 'search'));
+        const inj = JSON.parse(fs.readFileSync(path.join(D.shortInject, f), 'utf8'));
         const candidates = [
           { field: 'summary', text: inj.summary || '' },
           ...(inj.topics || []).map(t => ({ field: 'topic', text: t })),
@@ -1546,572 +1325,117 @@ function searchLayer(query, layer, opts = {}) {
         ];
         for (const c of candidates) {
           if (match(c.text)) {
-            results.push({ layer, sub: c.field, text: c.text.slice(0, 200), score: c.field === 'summary' ? 2 : 1.5, imp: inj.confidence || 0.7, ts: inj.ts || '', tags: inj.tags || [], file: `short/inject/${f}` });
+            results.push({ layer, sub: c.field, text: c.text.slice(0, 200), score: c.field === 'summary' ? 2 : 1.5, imp: inj.confidence || 0.7, file: `short/inject/${f}` });
           }
         }
       } catch {}
     }
-    endProf(); return results;
   }
 
   if (layer === 'raw') {
-    for (const f of cachedReadDir(D.shortRaw, 'search').sort().slice(-3)) {
+    for (const f of fs.readdirSync(D.shortRaw).sort().slice(-3)) {
       if (!f.endsWith('.jsonl')) continue;
       let ln = 0;
-      for (const line of cachedReadFile(path.join(D.shortRaw, f), 'search').split('\n')) {
+      for (const line of fs.readFileSync(path.join(D.shortRaw, f), 'utf8').split('\n')) {
         ln++;
         if (!line.trim()) continue;
         let o; try { o = JSON.parse(line); } catch { continue; }
         const text = String(o.text || '');
         if (match(text)) {
-          results.push({ layer, sub: 'raw', text: text.slice(0, 200), score: 1, imp: o.imp || 0.3, ts: o.ts, tags: o.tags || [], file: `short/raw/${f}`, line: ln });
+          results.push({ layer, sub: 'raw', text: text.slice(0, 200), score: 1, imp: o.imp || 0.3, ts: o.ts, file: `short/raw/${f}`, line: ln });
         }
         if (results.filter(r => r.layer === 'raw').length >= 5) break;
       }
     }
-    endProf(); return results;
   }
 
   if (layer === 'medium') {
-    for (const f of cachedReadDir(D.medium, 'search').sort().slice(-5)) {
+    for (const f of fs.readdirSync(D.medium).sort().slice(-5)) {
       if (!f.endsWith('.md')) continue;
-      let txt; try { txt = cachedReadFile(path.join(D.medium, f), 'search'); } catch { continue; }
+      let txt; try { txt = fs.readFileSync(path.join(D.medium, f), 'utf8'); } catch { continue; }
       const sections = txt.split(/^## /m).slice(1);
       for (const sec of sections) {
         const [head, ...rest] = sec.split('\n');
         const body = rest.join(' ');
         if (match(head) || match(body)) {
-          // 从文件名提取日期作为 ts
-          const dateMatch = f.match(/(\d{4}-\d{2}-\d{2})/);
-          results.push({ layer, sub: 'summary', text: head.trim().slice(0, 200), score: 1.5, imp: 0.7, ts: dateMatch ? dateMatch[1] + 'T12:00:00Z' : '', file: `medium/${f}` });
+          results.push({ layer, sub: 'summary', text: head.trim().slice(0, 200), score: 1.5, imp: 0.7, file: `medium/${f}` });
         }
         if (results.filter(r => r.layer === 'medium').length >= 5) break;
       }
     }
-    endProf(); return results;
   }
 
   if (layer === 'long') {
     if (fs.existsSync(LONG_FILE)) {
-      const txt = cachedReadFile(LONG_FILE, 'search');
+      const txt = fs.readFileSync(LONG_FILE, 'utf8');
       const lines = txt.split('\n');
       for (let i = 0; i < lines.length; i++) {
         if (match(lines[i]) && lines[i].trim().startsWith('-')) {
           const t = lines[i].trim().slice(0, 200);
-          results.push({ layer, sub: 'long', text: t, score: 2, imp: 0.9, ts: new Date().toISOString(), file: 'MEMORY.md', line: i + 1 });
-          trackMemoryHit(t);
-          trackHit(t); // v5: 忆阻器命中追踪
+          results.push({ layer, sub: 'long', text: t, score: 2, imp: 0.9, file: 'MEMORY.md', line: i + 1 });
+          trackMemoryHit(t); // ⑨ 追踪命中时间
           if (results.filter(r => r.layer === 'long').length >= 5) break;
         }
       }
     }
-    endProf(); return results;
   }
 
   if (layer === 'idx') {
     if (fs.existsSync(INDEX_FILE)) {
-      for (const line of cachedReadFile(INDEX_FILE, 'search').split('\n')) {
+      for (const line of fs.readFileSync(INDEX_FILE, 'utf8').split('\n')) {
         if (line.startsWith('|') && match(line)) {
-          results.push({ layer, sub: 'index', text: line.slice(0, 200), score: 1.5, imp: 0.6, ts: '', file: 'memory/index/index.md' });
+          results.push({ layer, sub: 'index', text: line.slice(0, 200), score: 1.5, imp: 0.6, file: 'memory/index/index.md' });
           if (results.filter(r => r.layer === 'idx').length >= 5) break;
         }
       }
     }
   }
 
-  endProf(); return results;
+  return results;
 }
 
-// ============================================================
-// v5: 命中频率追踪（忆阻器式动态权重）
-// ============================================================
-
-const HIT_TRACKER_FILE = path.join(D.engine, 'hit-frequency.json');
-let _hitFreq = null;
-
-function loadHitFreq() {
-  if (_hitFreq) return _hitFreq;
-  try { _hitFreq = JSON.parse(fs.readFileSync(HIT_TRACKER_FILE, 'utf8')); } catch { _hitFreq = {}; }
-  return _hitFreq;
-}
-
-function saveHitFreq() {
-  try { fs.writeFileSync(HIT_TRACKER_FILE, JSON.stringify(_hitFreq)); } catch {}
-}
-
-// v5.1: 常见停用词列表（高频但无检索价值的词，永不追踪命中）
-const HIT_STOP_WORDS = new Set([
-  '好的','收到','明白','嗯嗯','哈哈','谢谢','ok','OK','Ok','okay','好','对','是','嗯','哦','啊',
-  'yes','no','thanks','thank','got it','sure','okay',
-]);
-
-function _isNoiseKey(key) {
-  const t = key.trim().toLowerCase();
-  if (t.length < 4) return true;
-  if (HIT_STOP_WORDS.has(t)) return true;
-  if (/^(好的|收到|明白|嗯嗯|哈哈|谢谢|ok|okay|yes|no|sure|got it)$/i.test(t)) return true;
-  return false;
-}
-
-function trackHit(key) {
-  if (_isNoiseKey(key)) return; // 常见词不追踪
-  const h = loadHitFreq();
-  const now = Date.now();
-  if (!h[key]) h[key] = { count: 0, firstHit: now, lastHit: now, decays: 0, revived: 0 };
-  h[key].count++;
-  h[key].lastHit = now;
-  // 复活机制: 被衰减过的记亿被精确重新命中 → 恢复基准值
-  if (h[key].decays > 0 && h[key].count >= 2) {
-    h[key].count = Math.max(h[key].count, 3);
-    h[key].decays = Math.max(0, h[key].decays - 1);
-    h[key].revived = (h[key].revived || 0) + 1;
-  }
-  // 自然衰减: 每24h衰减一次（floor到1，确保可复活）
-  const age = (now - h[key].firstHit) / 86400000;
-  if (age > 1) h[key].count = Math.max(1, Math.floor(h[key].count * Math.exp(-age * 0.01)));
-  saveHitFreq();
-}
-
-// v5.1: 负反馈衰减 — 用户跳过/否定某结果时调用，防止忆阻器变成错误放大器
-function decayHit(key, strength = 1) {
-  const h = loadHitFreq();
-  if (!h[key]) return;
-  h[key].decays = (h[key].decays || 0) + strength;
-  // 每次衰减扣 30% 计数（最少保留 1）
-  h[key].count = Math.max(0, Math.floor(h[key].count * Math.pow(0.7, strength)));
-  if (h[key].count <= 0) { delete h[key]; }
-  saveHitFreq();
-}
-
-function hitBoost(key) {
-  if (_isNoiseKey(key)) return 0; // 常见词不给boost
-  const h = loadHitFreq();
-  if (!h[key]) return 0;
-  // 命中次数越多、最近命中越近 → boost 越高（封顶 0.3）
-  const recency = Math.exp(-(Date.now() - h[key].lastHit) / (7 * 86400000));
-  // 负反馈惩罚：被 decay 过的记忆 boost 打折
-  const decayPenalty = h[key].decays ? Math.pow(0.8, h[key].decays) : 1;
-  return Math.min(0.3, h[key].count * 0.02 * recency * decayPenalty);
-}
-
-// ============================================================
-// v5: 复合线索评分模型（compound-cue theory）
-//
-// familiarity = α·imp + β·recency_decay + γ·keyword_match + δ·hit_frequency
-//
-// 替代旧版的多路并行 searchLayer + merge → 单次评分、单次排序
-// time.js 半衰期正式接入搜索排序
-// ============================================================
-
-function compoundScore(item, query, opts = {}) {
-  const imp = item.imp || 0.3;
-  const text = item.text || '';
-
-  // 低置信摘要降权: time-fallback 产生的 low-confidence 摘要 ×0.6
-  const isLowConf = text.includes('low-confidence') || (item.quality && String(item.quality).includes('low-confidence'));
-  const confidenceMultiplier = isLowConf ? 0.6 : 1.0;
-
-  // 1. 关键词匹配度 (keyword_match)
-  const terms = tokenizeChinese(query);
-  let kwScore = 0;
-  const lower = text.toLowerCase();
-  const qLower = query.toLowerCase();
-  
-  // 完整查询匹配（高权重）
-  if (lower.includes(qLower)) kwScore = 0.4;
-  // 分词匹配
-  let matchedTerms = 0;
-  for (const t of terms) {
-    if (lower.includes(t.toLowerCase())) matchedTerms++;
-  }
-  if (!kwScore && matchedTerms > 0) {
-    kwScore = Math.min(0.35, matchedTerms / Math.max(terms.length, 1) * 0.35);
-  }
-  // 标签匹配（v5 新增）
-  if (item.tags && Array.isArray(item.tags) && item.tags.length) {
-    let tagMatch = 0;
-    for (const tag of item.tags) {
-      if (lower.includes(String(tag).toLowerCase()) || query.toLowerCase().includes(String(tag).toLowerCase())) {
-        tagMatch++;
-      }
-    }
-    if (tagMatch > 0) kwScore = Math.max(kwScore, Math.min(0.5, tagMatch * 0.25));
-  }
-
-  // 2. 时间衰减 (recency_decay, v5: 接入 time.js)
-  let recency = 0.15; // 默认中性值
-  if (item.ts) {
-    const ageDays = (Date.now() - new Date(item.ts).getTime()) / 86400000;
-    if (ageDays >= 0 && ageDays < 365 * 5) {
-      // v6.1: Flashbulb 闪光灯记忆 — imp≥0.9 的消息 90 天免疫衰减
-      const isFlashbulb = imp >= 0.9;
-      const effectiveHalfLife = isFlashbulb ? Math.max(90, (timeMod ? (timeMod.impToHalfLife ? timeMod.impToHalfLife(text, imp) : timeMod.getHalfLife(text)) : 30)) : (timeMod ? (timeMod.impToHalfLife ? timeMod.impToHalfLife(text, imp) : timeMod.getHalfLife(text)) : 30);
-      recency = effectiveHalfLife > 0 ? Math.exp(-ageDays * Math.LN2 / effectiveHalfLife) : 1.0;
-      if (isFlashbulb && ageDays < 90) recency = Math.max(recency, 0.6); // 90 天内至少保留 0.6
-    }
-  }
-
-  // 3. 命中频率 (hit_frequency, v5 新增)
-  const hitKey = text.slice(0, 80);
-  const hfBoost = hitBoost(hitKey);
-
-  // 4. 层权重
-  const layerW = (opts.layerWeights || {})[item.layer] || CFG.weights.hybrid[item.layer] || 0.15;
-
-  // 5. v5.1-elite: superseded 降权（TEPA 论文 — 旧记忆被新证据推翻时自动降权）
-  const isSuperseded = item.status === 'superseded' || item._superseded === true;
-  const supersededMultiplier = isSuperseded ? 0.15 : 1.0;
-
-  // 6. v5.1-elite: 话题连贯性加分（MemSIF TSM 修正 — 时间≠话题相关性）
-  // 同话题记忆即使时间久远，也应比昨天的无关记忆更靠前
-  let topicCoherence = 0;
-  if (opts.queryTopics && opts.queryTopics.length && item._topics && item._topics.length) {
-    const overlap = item._topics.filter(t => opts.queryTopics.includes(t)).length;
-    if (overlap >= 2) topicCoherence = 0.08;
-    else if (overlap >= 1) topicCoherence = 0.04;
-  }
-
-  // 7. v6: Zeigarnik 效应（蔡格尼克 1927 — 未完成任务记得更牢）
-  const hasTodoSignal = /待办|TODO|todo|下一步|计划[：:]|提醒|截止|明天|未完成|还没[做搞好]|需要[做搞定]/.test(text);
-  const zeigarnikBoost = hasTodoSignal ? 0.08 : 0;
-
-  // 8. v6: Primacy 首因效应（Murdock 1962 — 最早的信息记得更牢）
-  let primacyWeight = 0;
-  if (item.ts) {
-    const ageDays = (Date.now() - new Date(item.ts).getTime()) / 86400000;
-    if (ageDays > 30 && imp >= 0.5) primacyWeight = 0.03; // 旧但重要的
-  }
-
-  // 9. v6: Context 情境依赖（Godden & Baddeley 1975 — 同一情境下回忆更好）
-  let contextBonus = 0;
-  if (item.ts && item.ts.slice(0, 10) === today()) contextBonus = 0.03;
-
-  // 10. v6: Testing Boost 测验效应（Roediger & Karpicke 2006 — 被测试过的记得更牢）
-  const testingBoost = hfBoost > 0 ? 1.3 : 1.0;
-
-  // 11. 复合信源得分 (compound familiarity)
-  const compound = (
-    imp       * 0.35 +
-    recency   * 0.25 +
-    kwScore   * 0.25 +
-    hfBoost   * 0.10 +
-    layerW    * 0.05 +
-    topicCoherence     +       // v5.1: TSM 话题连贯性
-    zeigarnikBoost     +       // v6: Zeigarnik 未完成任务
-    primacyWeight      +       // v6: Primacy 首因效应
-    contextBonus               // v6: Context 情境依赖
-  ) * confidenceMultiplier     // low-confidence摘要自动降权
-    * supersededMultiplier     // v5.1: TEPA superseded 降权
-    * testingBoost;            // v6: Testing Effect 测验效应
-
-  return {
-    compound: Math.round(compound * 10000) / 10000,
-    breakdown: { imp, recency: Math.round(recency * 1000) / 1000, kwScore: Math.round(kwScore * 1000) / 1000, hfBoost: Math.round(hfBoost * 1000) / 1000, layerW: Math.round(layerW * 1000) / 1000, topicCoherence: Math.round(topicCoherence * 1000) / 1000, testingBoost: testingBoost > 1, zeigarnik: hasTodoSignal, primacy: primacyWeight > 0, context: contextBonus > 0, superseded: isSuperseded, confidence: confidenceMultiplier < 1 ? 'low' : undefined },
-  };
-}
-
-// ============================================================
-// v5.2: 用户反馈评分 + 权重自校准（RLHF-lite）
-//
-// 用法：
-//   1. search --query "..." → 自动缓存结果到 last-search.json
-//   2. rate --result 3 --score +1  → 为第3条结果评分
-//   3. rate --result 1 --score -1  → 为第1条结果减分
-//   4. recalibrate                → 基于累积评分重新拟合权重
-// ============================================================
-
-function loadRatings() {
-  try { return JSON.parse(fs.readFileSync(RATINGS_FILE, 'utf8')); }
-  catch { return []; }
-}
-
-function saveRatings(ratings) {
-  ensureDirs();
-  fs.writeFileSync(RATINGS_FILE, JSON.stringify(ratings, null, 2));
-}
-
-function saveLastSearch(data) {
-  ensureDirs();
-  fs.writeFileSync(LAST_SEARCH_FILE, JSON.stringify(data, null, 2));
-}
-
-function loadLastSearch() {
-  try { return JSON.parse(fs.readFileSync(LAST_SEARCH_FILE, 'utf8')); }
-  catch { return null; }
-}
-
-// 校准权重：简单线性回归（最小二乘）
-// 已知每个样本的 5 维特征和用户评分 (±1)，拟合最优权重向量
-function recalibrateWeights(ratings) {
-  if (!ratings || ratings.length < 10) return { error: '需要至少 10 条评分才能校准（当前 ' + (ratings?.length || 0) + ' 条）' };
-
-  // 特征: [imp, recency, kwScore, hfBoost, layerW]
-  const X = []; // 每行5个特征
-  const y = []; // 目标值: +1(好) 或 0(差)
-
-  for (const r of ratings) {
-    const b = r.breakdown || {};
-    X.push([b.imp || 0.3, b.recency || 0.15, b.kwScore || 0, b.hfBoost || 0, b.layerW || 0.15]);
-    y.push(r.score > 0 ? 1 : 0);
-  }
-
-  const n = X.length;
-  const m = 5; // 特征数
-
-  // 正规方程: (X^T X) w = X^T y
-  // 构建 X^T X (5×5) 和 X^T y (5×1)
-  const XtX = Array.from({ length: m }, () => Array(m).fill(0));
-  const Xty = Array(m).fill(0);
-
-  for (let i = 0; i < n; i++) {
-    for (let j = 0; j < m; j++) {
-      Xty[j] += X[i][j] * y[i];
-      for (let k = 0; k < m; k++) {
-        XtX[j][k] += X[i][j] * X[i][k];
-      }
-    }
-  }
-
-  // 高斯消元解 5×5 线性方程组
-  function gauss(A, b) {
-    const n = b.length;
-    for (let col = 0; col < n; col++) {
-      // 选主元
-      let maxRow = col;
-      for (let row = col + 1; row < n; row++) {
-        if (Math.abs(A[row][col]) > Math.abs(A[maxRow][col])) maxRow = row;
-      }
-      [A[col], A[maxRow]] = [A[maxRow], A[col]];
-      [b[col], b[maxRow]] = [b[maxRow], b[col]];
-
-      if (Math.abs(A[col][col]) < 1e-12) continue;
-
-      for (let row = col + 1; row < n; row++) {
-        const factor = A[row][col] / A[col][col];
-        for (let j = col; j < n; j++) A[row][j] -= factor * A[col][j];
-        b[row] -= factor * b[col];
-      }
-    }
-
-    const x = Array(n).fill(0);
-    for (let i = n - 1; i >= 0; i--) {
-      let sum = b[i];
-      for (let j = i + 1; j < n; j++) sum -= A[i][j] * x[j];
-      x[i] = Math.abs(A[i][i]) > 1e-12 ? sum / A[i][i] : 0;
-    }
-    return x;
-  }
-
-  const rawW = gauss(XtX.map(r => [...r]), [...Xty]);
-
-  // 归一化：所有权重之和为 1.0，且每个权重 ≥ 0.02
-  const minW = 0.02;
-  const clamped = rawW.map(w => Math.max(minW, w));
-  const sum = clamped.reduce((a, b) => a + b, 0);
-  const w = clamped.map(c => Math.round(c / sum * 1000) / 1000);
-
-  // 计算拟合优度
-  let correct = 0;
-  for (let i = 0; i < n; i++) {
-    const pred = X[i].reduce((s, xj, j) => s + w[j] * xj, 0);
-    if ((pred > 0.3 && y[i] === 1) || (pred <= 0.3 && y[i] === 0)) correct++;
-  }
-
-  return {
-    samples: n,
-    newWeights: {
-      imp: w[0], recency: w[1], kwScore: w[2], hfBoost: w[3], layerW: w[4],
-    },
-    oldWeights: { imp: 0.35, recency: 0.25, kwScore: 0.25, hfBoost: 0.10, layerW: 0.05 },
-    accuracy: Math.round(correct / n * 10000) / 100 + '%',
-    tip: '满意后运行: engine.js recalibrate --apply 写入 config.json',
-  };
-}
-
-// 多路并行召回 + 复合线索统一排序（v5 重构）
+// 多路并行召回 + 统一排序
 async function multiPathSearch(query, opts = {}) {
-  const endProf = profileStart('multiPathSearch');
   const weights = queryWeights(opts);
   const layerNames = Object.keys(weights).filter(k => weights[k] > 0);
 
-  // v6.1: Synonym 同义词扩展 — 纯字典，零 LLM
-  const expandedQuery = expandSynonyms(query);
-  const effectiveQuery = expandedQuery.length > query.length ? expandedQuery : query;
-
-  // v5.1-elite: 提取查询话题关键词（MemSIF TSM — 话题连贯性加分）
-  const queryTopics = extractTopics(query);
-
-  // v5: keyword-first 策略 — 先同步召回关键词层（毫秒级），语义异步后补
+  // 并行召回（所有层同时搜索）
   const layerResults = {};
-  
-  // 同步层：立即搜索
   for (const layer of layerNames) {
-    if (layer === 'semantic') continue; // 语义单独处理
-    layerResults[layer] = searchLayer(effectiveQuery, layer, opts);
+    if (layer === 'semantic') {
+      const vec = loadVectors();
+      if (!vec.items.length) continue;
+      const r = await semanticSearch(query, 8);
+      if (r && r.hits) layerResults[layer] = r.hits.map(h => ({ ...h, layer: 'semantic', sub: 'vector' }));
+    } else {
+      layerResults[layer] = searchLayer(query, layer, opts);
+    }
   }
 
-  // v5: 复合线索评分 — 单次统一排序（替代旧版 multi-pass merge）
+  // 统一排序：layer_weight * (score * (1 + imp))
   const merged = [];
   const seen = new Set();
   for (const [layer, results] of Object.entries(layerResults)) {
+    const w = weights[layer] || 0.1;
     for (const r of results) {
+      const combinedScore = Math.round(w * (r.score || 1) * (1 + (r.imp || 0.3)) * 1000) / 1000;
       const key = r.file ? `${r.file}:${r.line || r.text?.slice(0, 40)}` : `${r.layer}:${r.text?.slice(0, 40)}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      const { compound, breakdown } = compoundScore(r, query, { layerWeights: weights, queryTopics });
-      merged.push({ ...r, combinedScore: compound, _breakdown: breakdown });
+      merged.push({ ...r, combinedScore, weight: Math.round(w * 100) / 100 });
     }
   }
 
-  // v5.1: 语义异步 — 带超时降级策略
-  // 策略: keyword先出(15ms) → semantic异步补全 → 
-  //   · 返回<50ms: 立即合并（不等待满200ms）
-  //   · 超时200ms: 保留keyword结果，标记 _semanticStatus='timeout'
-  //   · 失败: 保留keyword结果，标记 _semanticStatus='failed'
-  let semanticPromise = null;
-  let semanticStatus = 'disabled';
-  const hasSemantic = layerNames.includes('semantic');
-  if (hasSemantic) {
-    const vec = loadVectors();
-    if (vec.items.length) {
-      const semanticStart = Date.now();
-      semanticPromise = semanticSearch(query, 8).then(r => {
-        const elapsed = Date.now() - semanticStart;
-        if (r && r.hits) return { hits: r.hits.map(h => ({ ...h, layer: 'semantic', sub: 'vector' })), elapsedMs: elapsed };
-        return { hits: [], elapsedMs: elapsed };
-      }).catch(e => ({ hits: [], elapsedMs: Date.now() - semanticStart, error: e.message }));
-    }
-  }
-
-  if (semanticPromise) {
-    const SEMANTIC_TIMEOUT_MS = opts.semanticTimeoutMs || 200;
-    try {
-      const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('semantic_timeout')), SEMANTIC_TIMEOUT_MS));
-      const semanticResult = await Promise.race([semanticPromise, timeout]);
-      if (semanticResult.error) {
-        semanticStatus = 'failed';
-      } else if (semanticResult.hits && semanticResult.hits.length) {
-        semanticStatus = `merged(${semanticResult.elapsedMs}ms)`;
-        for (const r of semanticResult.hits) {
-          const key = r.file ? `${r.file}:${r.line || r.text?.slice(0, 40)}` : `semantic:${r.text?.slice(0, 40)}`;
-          if (seen.has(key)) continue;
-          seen.add(key);
-          const { compound } = compoundScore(r, query, { layerWeights: weights, queryTopics });
-          r._semantic = true;
-          merged.push({ ...r, combinedScore: compound });
-        }
-      } else {
-        semanticStatus = 'empty';
-      }
-    } catch (err) {
-      semanticStatus = err.message === 'semantic_timeout' ? 'timeout' : 'failed';
-    }
-  }
-
-  let asOfFiltered = 0;
-  let filteredMerged = merged;
-  if (opts.asOf) {
-    const cutoff = new Date(opts.asOf + 'T23:59:59Z').getTime();
-    const before = filteredMerged.length;
-    filteredMerged = filteredMerged.filter(r => {
-      if (!r.ts) return true;
-      return new Date(r.ts).getTime() <= cutoff;
-    });
-    asOfFiltered = before - filteredMerged.length;
-  }
-
-  // 最终排序
-  filteredMerged.sort((a, b) => b.combinedScore - a.combinedScore);
-
-  // v6: RIF Penalty 检索诱发遗忘（Anderson & Bjork 1994）
-  // 同 topic 中排位靠后的记忆短暂降权——"回忆一个会抑制另一个"
-  let rifPenalized = 0;
-  if (filteredMerged.length > 1) {
-    const topicKeys = new Map(); // topic → first occurrence score
-    for (let i = 0; i < filteredMerged.length; i++) {
-      const r = filteredMerged[i];
-      const topics = r._topics || extractTopics(r.text || '');
-      for (const t of topics) {
-        if (!topicKeys.has(t)) {
-          topicKeys.set(t, r.combinedScore);
-        } else if (r.combinedScore < topicKeys.get(t) * 0.6) {
-          // 同 topic 但分数明显低于第一名 → RIF 抑制
-          r.combinedScore *= 0.7;
-          r._rifPenalized = true;
-          rifPenalized++;
-          break;
-        }
-      }
-    }
-    // RIF 后重排序
-    if (rifPenalized > 0) filteredMerged.sort((a, b) => b.combinedScore - a.combinedScore);
-  }
-
-  // v6.1: MMR 搜索结果多样性（Maximal Marginal Relevance）
-  // 防止返回 5 条同一话题的重复记忆 — 多样性 > 纯分数排序
-  if (filteredMerged.length > 1) {
-    for (let i = 1; i < filteredMerged.length; i++) {
-      const current = filteredMerged[i].text || '';
-      for (let j = 0; j < i; j++) {
-        const higher = filteredMerged[j].text || '';
-        // 简单 Jaccard 相似度：共享 bigram / 总 bigram
-        const curGrams = new Set((current.match(/[\u4e00-\u9fff]{2}|[a-zA-Z]{2,}/g) || []));
-        const hiGrams = new Set((higher.match(/[\u4e00-\u9fff]{2}|[a-zA-Z]{2,}/g) || []));
-        if (curGrams.size === 0 || hiGrams.size === 0) continue;
-        const intersection = [...curGrams].filter(g => hiGrams.has(g)).length;
-        const minSize = Math.min(curGrams.size, hiGrams.size);
-        const similarity = minSize > 0 ? intersection / minSize : 0;
-        if (similarity > 0.5) {
-          filteredMerged[i].combinedScore *= 0.6; // 与高位结果太像 → 降权
-          filteredMerged[i]._mmrPenalized = true;
-          break;
-        }
-      }
-    }
-    filteredMerged.sort((a, b) => b.combinedScore - a.combinedScore);
-  }
-
+  merged.sort((a, b) => b.combinedScore - a.combinedScore);
+  
   // 替换层名为友好名称
-  for (const r of filteredMerged) r.layer = layerName(r.layer);
+  for (const r of merged) r.layer = layerName(r.layer);
   
   // 统计各层命中数
   const layerStats = {};
-  for (const r of filteredMerged) layerStats[r.layer] = (layerStats[r.layer] || 0) + 1;
+  for (const r of merged) layerStats[r.layer] = (layerStats[r.layer] || 0) + 1;
 
-  const result = { 
-    total: filteredMerged.length, 
-    layers: layerStats, 
-    results: filteredMerged.slice(0, 20), 
-    weights: layerNames.reduce((o, l) => ({ ...o, [l]: Math.round(weights[l] * 100) / 100 }), {}),
-    _v5: { semanticAsync: semanticStatus },
-    asOf: opts.asOf ? { date: opts.asOf, filteredOut: asOfFiltered } : undefined,
-  };
-
-  // v5.1: 权重校准统计 — 聚合所有结果的各维度贡献分布
-  // 用户可通过 --profile 查看各维度是否均衡，诊断权重合理性
-  if (PROFILER_ENABLED || opts.profile) {
-    const dims = { imp: [], recency: [], kwScore: [], hfBoost: [], layerW: [] };
-    for (const r of filteredMerged) {
-      if (r._breakdown) {
-        for (const d of Object.keys(dims)) {
-          if (r._breakdown[d] !== undefined) dims[d].push(r._breakdown[d]);
-        }
-      }
-    }
-    const percentile = (arr, p) => { const s = arr.slice().sort((a,b)=>a-b); return s[Math.floor(s.length*p)] || 0; };
-    result._calibration = {};
-    for (const [dim, vals] of Object.entries(dims)) {
-      if (!vals.length) continue;
-      result._calibration[dim] = {
-        avg: Math.round(vals.reduce((a,b)=>a+b,0)/vals.length*1000)/1000,
-        p50: Math.round(percentile(vals, 0.5)*1000)/1000,
-        p90: Math.round(percentile(vals, 0.9)*1000)/1000,
-        range: [Math.round(Math.min(...vals)*1000)/1000, Math.round(Math.max(...vals)*1000)/1000],
-      };
-    }
-  }
-  endProf();
-  return result;
+  return { total: merged.length, layers: layerStats, results: merged.slice(0, 20), weights: layerNames.reduce((o, l) => ({ ...o, [l]: Math.round(weights[l] * 100) / 100 }), {}) };
 }
 
 // ============================================================
@@ -2725,7 +2049,7 @@ function compensationScan() {
 // 命令实现
 // ============================================================
 
-function cmdRecord(role, text, opts = {}) {
+function cmdRecord(role, text) {
   ensureDirs();
   // v4.5-Pro: feed session context for query rewrite
   if (rewriteMod && text) rewriteMod.feedSessionMessage(role, text);
@@ -2735,15 +2059,11 @@ function cmdRecord(role, text, opts = {}) {
   text = compressForStorage(sanitizeText(String(text || '')));
   if (!text.trim()) return out({ recorded: false, reason: 'empty' });
 
-  const tags = opts.tags || []; // v5: 用户自定义标签
   const imp = importanceOf(role, text);
   // 可选开关：允许关闭对话记录（raw），其他功能照常
   if (CFG.recordRaw !== false) {
-    const line = JSON.stringify({ ts: nowIso(), role, text, imp, tags: tags.length ? tags : undefined }) + '\n';
+    const line = JSON.stringify({ ts: nowIso(), role, text, imp }) + '\n';
     fs.appendFileSync(path.join(D.shortRaw, `${today()}.jsonl`), line);
-    // v5: 写入后使缓存失效
-    memCache.invalidate(path.join(D.shortRaw, `${today()}.jsonl`));
-    memCache.invalidate(D.shortRaw);
   }
 
   // v5.1 P0：高重要性消息触发工作记忆刷新
@@ -2778,11 +2098,10 @@ function cmdRecord(role, text, opts = {}) {
   const lastFlush = s._lastBatchFlush || 0;
   const shouldFlush = s._batchCount >= BATCH_SIZE || (Date.now() - lastFlush) > BATCH_INTERVAL_MS;
 
-  let consolidated = null;
-
   if (shouldFlush) {
     syncTranscripts();
     reindex();
+    let consolidated = null;
     try { consolidated = autoConsolidate(); } catch {}
     s._batchCount = 0;
     s._lastBatchFlush = Date.now();
@@ -2815,236 +2134,7 @@ function cmdRecord(role, text, opts = {}) {
     }).catch(() => {}); // fire-and-forget，不阻塞记录流程
   }
 
-  // v5.1-elite: source provenance（源标记 — 记录来自哪个 Agent/平台）
-  if (opts.source || process.env.MNEMOSYNE_SOURCE) {
-    s._provenance = s._provenance || {};
-    s._provenance.lastSource = opts.source || process.env.MNEMOSYNE_SOURCE;
-    saveState(s);
-  }
-
   out({ recorded: true, turns: s.turns, totalMessages: s.totalMessages, imp, consolidated });
-}
-
-// ============================================================
-// v5.1-elite: TEPA superseded 自动检测（纯关键词，零 LLM）
-//
-// 当新消息包含"推翻"信号时（如"替代/换了/不再是/放弃/改回"），
-// 自动扫描 medium 和 long 层，标记矛盾的旧记忆为 superseded。
-// 被标记的记忆保留不删，但搜索时降权 ×0.15。
-// ============================================================
-
-// 推翻信号词（仅对明确表达"改变"的消息触发检测）
-const SUPERSEDE_SIGNALS = [
-  '替代', '替换', '换了', '换成了', '改用', '改成', '换成',
-  '不再', '不是', '不再是', '放弃了', '不要了', '废除',
-  '改回', '回退', '撤回', '撤销', '推翻',
-  'instead', 'no longer', 'replaced', 'switched', 'deprecated',
-];
-
-// 检测一条新消息是否"推翻"了旧记忆
-function checkSupersedeFromMessages(msgs) {
-  // 只检查包含推翻信号的高 imp 消息
-  const candidateMsgs = msgs.filter(m => {
-    if (!m.text || m.imp < 0.5) return false;
-    const t = String(m.text).toLowerCase();
-    return SUPERSEDE_SIGNALS.some(s => t.includes(s));
-  });
-  if (candidateMsgs.length === 0) return { superseded: 0, reason: '无推翻信号消息' };
-
-  let totalSuperseded = 0;
-  const allAffected = [];
-
-  for (const msg of candidateMsgs) {
-    const topics = extractTopics(msg.text);
-    if (topics.length === 0) continue;
-
-    // 扫描 medium 层 — 找同话题但可能已过时的块
-    try {
-      const files = fs.readdirSync(D.medium).filter(f => f.endsWith('.md'));
-      for (const f of files.slice(-30)) {
-        const fp = path.join(D.medium, f);
-        let content;
-        try { content = fs.readFileSync(fp, 'utf8'); } catch { continue; }
-        
-        const contentLower = content.toLowerCase();
-        const matchCount = topics.filter(tp => contentLower.includes(tp.toLowerCase())).length;
-        if (matchCount < 2) continue;
-        if (content.includes('[superseded]')) continue;
-
-        const marked = content + `\n\n<!-- [superseded] 被新证据推翻: ${msg.text.slice(0, 80)} — ${nowIso()} -->\n`;
-        fs.writeFileSync(fp, marked);
-        totalSuperseded++;
-        allAffected.push(f);
-      }
-    } catch {}
-
-    // 扫描 MEMORY.md
-    try {
-      let longContent = fs.readFileSync(LONG_FILE, 'utf8');
-      const longLower = longContent.toLowerCase();
-      const matchCount = topics.filter(tp => longLower.includes(tp.toLowerCase())).length;
-      if (matchCount >= 2 && !longContent.includes('[superseded]')) {
-        const marked = longContent + `\n\n<!-- [superseded] 被新证据推翻: ${msg.text.slice(0, 80)} — ${nowIso()} -->\n`;
-        fs.writeFileSync(LONG_FILE, marked);
-        totalSuperseded++;
-        allAffected.push('MEMORY.md');
-      }
-    } catch {}
-  }
-
-  return { superseded: totalSuperseded, affected: allAffected, candidatesChecked: candidateMsgs.length };
-}
-
-function checkSupersede(newText) {
-  return checkSupersedeFromMessages([{ text: newText, imp: 0.6 }]);
-}
-
-// ============================================================
-// v6: Muscle Memory 肌肉记忆（Muscle Memory paper 2026）
-//
-// 被高频检索的记忆（hitFreq > 10）自动提升到工作记忆层。
-// 不再需要每次搜索——它已经"编译"进行为。
-// 纯算法：读 hit-frequency.json → 筛选 → 写入 working memory。
-// ============================================================
-
-function promoteMuscleMemory() {
-  const hf = loadHitFreq();
-  const keys = Object.keys(hf);
-  if (keys.length === 0) return { promoted: 0 };
-
-  const MUSCLE_THRESHOLD = 10;
-  const candidates = keys
-    .filter(k => hf[k].count >= MUSCLE_THRESHOLD)
-    .sort((a, b) => hf[b].count - hf[a].count)
-    .slice(0, 5); // 最多 5 条
-
-  if (candidates.length === 0) return { promoted: 0 };
-
-  // 写入 working memory 的 facts 区
-  const wmFile = path.join(D.shortWorking, 'current.json');
-  let wm;
-  try { wm = JSON.parse(fs.readFileSync(wmFile, 'utf8')); } catch { wm = { task: '', decisions: [], questions: [], facts: [] }; }
-  wm.facts = wm.facts || [];
-
-  let promoted = 0;
-  for (const key of candidates) {
-    const name = key.length > 60 ? key.slice(0, 57) + '...' : key;
-    // 避免重复
-    if (wm.facts.some(f => f.includes(name))) continue;
-    wm.facts.push(`[muscle] ${name} (命中${hf[key].count}次)`);
-    promoted++;
-  }
-
-  // 保持最多 10 条
-  if (wm.facts.length > 10) wm.facts = wm.facts.slice(-10);
-
-  fs.writeFileSync(wmFile, JSON.stringify(wm, null, 2));
-  return { promoted, candidates: candidates.slice(0, promoted), total: candidates.length };
-}
-
-// ============================================================
-// v6.1: Sleep Consolidation 睡眠巩固
-//
-// 模拟睡眠中记忆巩固：白天被访问过的记忆，夜间自动 +1 hitFreq。
-// 纯算法：读今天的 hit-frequency.json → 所有命中过 +1 → 写回。
-// ============================================================
-
-function sleepConsolidate() {
-  const hf = loadHitFreq();
-  const keys = Object.keys(hf);
-  if (keys.length === 0) return { consolidated: 0 };
-
-  let count = 0;
-  for (const key of keys) {
-    if (hf[key] && hf[key].count > 0) {
-      hf[key].count += 1;
-      hf[key].lastHit = Date.now();
-      count++;
-    }
-  }
-
-  const hfFile = path.join(D.engine, 'hit-frequency.json');
-  fs.writeFileSync(hfFile, JSON.stringify(hf, null, 2));
-  return { consolidated: count, totalKeys: keys.length };
-}
-
-// ============================================================
-// v6.1: Memory Relationships 记忆关联
-//
-// 扫描 medium 块，找出共享 3+ 关键词的块对，添加交叉引用。
-// "参见: medium/2026-08-07.md (话题: React, 前端架构)"
-// ============================================================
-
-function buildMemoryRelations() {
-  try {
-    const files = fs.readdirSync(D.medium).filter(f => f.endsWith('.md')).sort().slice(-60);
-    if (files.length < 2) return { relations: 0 };
-
-    // 为每个块提取关键词
-    const blockTopics = {};
-    for (const f of files) {
-      try {
-        const content = fs.readFileSync(path.join(D.medium, f), 'utf8');
-        blockTopics[f] = extractTopics(content);
-      } catch { blockTopics[f] = []; }
-    }
-
-    let relations = 0;
-    for (let i = 0; i < files.length; i++) {
-      for (let j = i + 1; j < files.length; j++) {
-        const ti = blockTopics[files[i]] || [];
-        const tj = blockTopics[files[j]] || [];
-        const overlap = ti.filter(t => tj.includes(t)).length;
-        if (overlap >= 3) {
-          // 添加交叉引用
-          const fpi = path.join(D.medium, files[i]);
-          const fpj = path.join(D.medium, files[j]);
-          let ci = fs.readFileSync(fpi, 'utf8');
-          let cj = fs.readFileSync(fpj, 'utf8');
-          const refI = `\n> 🔗 参见: ${files[j]} (共同话题: ${ti.filter(t => tj.includes(t)).slice(0, 3).join(', ')})`;
-          const refJ = `\n> 🔗 参见: ${files[i]} (共同话题: ${ti.filter(t => tj.includes(t)).slice(0, 3).join(', ')})`;
-          if (!ci.includes(files[j])) { ci += refI; fs.writeFileSync(fpi, ci); relations++; }
-          if (!cj.includes(files[i])) { cj += refJ; fs.writeFileSync(fpj, cj); relations++; }
-        }
-      }
-    }
-    return { relations, blocksScanned: files.length };
-  } catch (e) { return { relations: 0, error: e.message }; }
-}
-
-// ============================================================
-// v6.1: Topic Chunking 话题分块
-//
-// 按话题自动分组 medium 块，生成话题索引文件。
-// topics.json: { "React": ["2026-08-10.md","2026-08-11.md"], ... }
-// ============================================================
-
-function buildTopicChunks() {
-  try {
-    const files = fs.readdirSync(D.medium).filter(f => f.endsWith('.md')).sort().slice(-60);
-    const topicIndex = {};
-
-    for (const f of files) {
-      try {
-        const content = fs.readFileSync(path.join(D.medium, f), 'utf8');
-        const topics = extractTopics(content);
-        for (const t of topics.slice(0, 8)) { // 每个块最多取 8 个话题
-          if (!topicIndex[t]) topicIndex[t] = [];
-          if (!topicIndex[t].includes(f)) topicIndex[t].push(f);
-        }
-      } catch {}
-    }
-
-    // 只保留有 2+ 个关联文件的话题
-    const filtered = {};
-    for (const [topic, fs] of Object.entries(topicIndex)) {
-      if (fs.length >= 2) filtered[topic] = fs;
-    }
-
-    const topicFile = path.join(D.index, 'topics.json');
-    fs.writeFileSync(topicFile, JSON.stringify(filtered, null, 2));
-    return { topics: Object.keys(filtered).length, totalFiles: files.length };
-  } catch (e) { return { topics: 0, error: e.message }; }
 }
 
 function cmdStatus() {
@@ -3055,7 +2145,7 @@ function cmdStatus() {
   s.nextSignalIn = Math.min(s.nextShortIn, s.nextMediumIn);
   s.root = ROOT;
   s.engineDir = ENGINE_DIR;
-  s.version = VERSION;
+  s.version = 'Mnemosyne v4.5-Pro';
   // 附加 v5 状态
   const vec = loadVectors();
   s.semanticEnabled = s.semanticEnabled || false;
@@ -3073,20 +2163,6 @@ function cmdStatus() {
   const dp = loadDistillProposals();
   s.pendingProposals = dp.proposals.filter(p => p.status === 'pending').length;
   s.recordRaw = CFG.recordRaw !== false;
-  // v5: 缓存统计 + 命中频率 + 探查器 + 评分 + 备份
-  s.cache = memCache.stats();
-  s.hitFreq = { entries: Object.keys(loadHitFreq()).length };
-  if (PROFILER_ENABLED) s.profiler = profileReport();
-  // 评分系统
-  try { const ratings = loadRatings(); s.ratings = { total: ratings.length, pos: ratings.filter(r=>r.score>0).length, neg: ratings.filter(r=>r.score<0).length }; } catch {}
-  // 备份状态
-  try {
-    const backupGit = path.join(MEM, '.git');
-    s.backup = { initialized: fs.existsSync(backupGit), dir: backupGit };
-  } catch { s.backup = { initialized: false }; }
-  // CLI缓存说明
-  s._cacheNote = 'LRU缓存仅在Gateway长驻进程内生效；CLI单次调用每次冷启动，无跨进程缓存';
-  s._v5 = { compoundCue: true, timeDecay: true, hitTracking: true, tags: true, semanticAsync: true, rateRecalibrate: true };
   out(s);
 }
 
@@ -3326,8 +2402,8 @@ function highlight(text, terms) {
   for (const t of terms) {
     if (!t) continue;
     try {
-      s = s.split(new RegExp(`(${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi')).join('**$1**');
-    } catch {}
+      s = s.split(new RegExp(`(${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi')).join('⟪$1⟫');
+    } catch { /* 忽略 */ }
   }
   return s;
 }
@@ -3421,12 +2497,8 @@ async function semanticSearch(query, topN = 8) {
 
 async function cmdSearch(query, opts) {
   ensureDirs();
-  if (!query) return out({ error: '用法: engine.js search --query "关键词" [--mode keyword|semantic|hybrid|recent|history] [--as-of YYYY-MM-DD]' });
+  if (!query) return out({ error: '用法: engine.js search --query "关键词" [--mode keyword|semantic|hybrid|recent|history]' });
   const mode = opts.mode || 'keyword';
-
-  // v5.1-elite: as-of 时间点查询（Engram 论文 — "那时候我们认为X"）
-  const asOf = opts['as-of'] || null;
-  if (asOf && !/^\d{4}-\d{2}-\d{2}$/.test(asOf)) return out({ error: '--as-of 格式错误，请使用 YYYY-MM-DD' });
 
   // P1：所有模式走多路并行召回
   const s = loadState();
@@ -3436,7 +2508,7 @@ async function cmdSearch(query, opts) {
   if (effectiveMode !== mode) opts = { ...opts, mode: effectiveMode };
   if (s.semanticEnabled && !vec.items.length && (effectiveMode === 'semantic' || effectiveMode === 'hybrid')) await cmdEmbedSilent();
 
-  const result = await multiPathSearch(query, { mode, asOf });
+  const result = await multiPathSearch(query, { mode });
 
   // P1: 语义去重 — 移除内容相似度 >80% 的重复结果
   const deduped = dedupeResults(result.results);
@@ -3447,21 +2519,7 @@ async function cmdSearch(query, opts) {
 
   const indexInfo = { mode: vec.mode, items: vec.items.length, remoteFailed: vec.remoteFailed || false };
 
-  // v4.5-Pro: module hooks for search
-  if (refusalMod && result.results?.length > 0) {
-    const r = refusalMod.shouldRefuse(result.results, { query });
-    if (r.refuse) result.refusal = r;
-  }
-  if (timeMod && result.results?.length > 0) {
-    result.results = result.results.map(s => {
-      const halfLife = timeMod.getHalfLife(s.text || '');
-      return timeMod.markStale(s, halfLife);
-    });
-  }
-
-  out({ query, mode: effectiveMode, fallback: effectiveMode !== mode ? '语义未开启→降级keyword' : null, total: result.total, layers: result.layers, weights: result.weights, results: result.results, indexInfo, refusal: result.refusal, _v5: result._v5, _calibration: result._calibration });
-  // v5.2: 缓存最近一次搜索结果，供 rate 命令使用
-  try { saveLastSearch({ query, mode: effectiveMode, results: result.results, ts: nowIso() }); } catch {}
+  out({ query, mode: effectiveMode, fallback: effectiveMode !== mode ? '语义未开启→降级keyword' : null, total: result.total, layers: result.layers, weights: result.weights, results: result.results, indexInfo });
 }
 
 // P1: 搜索结果语义去重 — 相同文件且文本相似度 >80% 的只保留 imp 最高的
@@ -3687,20 +2745,22 @@ async function cmdQA(opts = {}) {
     if (fs.existsSync(pf)) profile = fs.readFileSync(pf, 'utf8').slice(0, 2000);
   } catch {}
 
-  // 3. Search: hybrid 双路召回（keyword + semantic）
+  // 3. Search: keyword + 长期记忆（双路召回）
   const sources = [];
   const seen = new Set();
   
-  // Hybrid semantic search (not keyword-only)
+  // 关键词搜索
   try {
-    const searchResult = await multiPathSearch(query, { mode: 'hybrid' });
-    const results = searchResult?.results || [];
-    for (const r of results.slice(0, 15)) {
-      const txt = (r.text || '').replace(/<[^>]+>/g, '').replace(/⟪\$1⟫/g, '').trim();
-      const key = txt.slice(0, 60);
-      if (!seen.has(key) && txt.length > 10) {
-        seen.add(key);
-        sources.push({ text: txt, file: r.file || r.layer || 'memory', score: r.combinedScore || r.score || 1, layer: r.layer });
+    const kwTerms = tokenizeChinese(query);
+    const kwResults = keywordSearch(query);
+    for (const r of (kwResults || []).slice(0, 8)) {
+      for (const hit of (r.hits || []).slice(0, 2)) {
+        const txt = (hit.text || '').replace(/<[^>]+>/g, '').trim();
+        const key = txt.slice(0, 60);
+        if (!seen.has(key) && txt.length > 10) {
+          seen.add(key);
+          sources.push({ text: txt, file: r.file, score: r.score || 1 });
+        }
       }
     }
   } catch {}
@@ -4132,78 +3192,66 @@ function cmdProfile(opts) {
 // CLI 入口
 // ============================================================
 
-const HELP = `Mnemosyne ${VERSION} — OpenClaw 分层记忆引擎
+const HELP = `Mnemosyne v4 Pro — OpenClaw 分层记忆引擎
 
 Mnemosyne（谟涅摩绪涅）：希腊记忆女神，缪斯之母
-复合线索评分模型（compound-cue theory）：imp + recency + keyword + frequency
 中期+长期: 状态字段 active|candidate|disputed|superseded|archived
 memory.md: nightly distill → proposals 文件 → agent 审阅确认后写入（人工把关）
 
 用法: engine.js <command> [options]
 
-基础命令:
-  record    --role <user|assistant> --text "内容" [--tags tag1,tag2]  记录消息（v5: 支持标签）
-  status                                            引擎状态（含缓存/命中频率/v5特性）
+基础命令（v4 保留）:
+  record    --role <user|assistant> --text "内容"   记录消息
+  status                                            引擎状态（含索引/TODO/归档统计）
   enable / disable                                  启用/暂停自动记录
+  signal                                            手动触发摘要信号
   init                                              初始化目录结构
   sync                                              转录补录 + 索引补全 + 归档 + 待办提取
   reindex                                           扫描中期摘要块补齐索引
-  consolidate [--check | --force]                   自动整合：新对话→中期摘要块+索引
-  search    --query "关键词" [--mode keyword|semantic|hybrid|recent|history] [--as-of YYYY-MM-DD] [--profile]  多模式搜索
+  consolidate [--check | --force]                   自动整合：新对话→中期摘要块+索引（无需提醒）
+  search    --query "关键词" [--mode keyword|semantic|hybrid|recent|history]  多模式搜索
   stats                                             统计仪表盘
   health                                            健康度检查
   save      --file "path" --text "content"          保存文件（MEMORY.md 自动版本快照）
   export                                            导出为 tar.gz
   timeline                                          时间轴视图
 
-v5 核心 — 语义智能:
+v5 新增 — 语义智能:
   embed     [--force]                               构建/刷新语义向量索引（远端 > 本地回退）
+  content-index    [--force]                        构建 MEMORY.md 结构化索引（关键词/实体/时间）
 
-v5 核心 — 版本 & 冲突:
+v5 新增 — 版本 & 冲突:
   version   [--force]                              MEMORY.md 版本快照（自动节流 1h）
   version-history                                  查看版本历史（最近 50 个）
   version-diff [--v1 <id> --v2 <id>]               对比两个版本的差异
   conflict                                         检测 MEMORY.md 中可能的矛盾条目
 
-v5 核心 — 待办 & 备份:
+v5 新增 — 待办 & 备份:
   todos     [--add "内容" | --done <id>]            待办清单（提取/添加/完成）
   backup    [--msg "提交信息"]                        Git 备份记忆文件
   backup-log                                        查看备份历史
 
-v5 核心 — 会话 & 权限:
+v5 新增 — 会话 & 权限:
   sessions                                          多会话聚合视图（48h 内有效）
   permission [--agent <id> --level read|write|admin]  查看/设置访问权限
   permission --default read|write                   设置默认权限级别
   config    [--get key | --set key --value val | --reset]  查看/修改配置
   devlog    [--log "事件"]                          开发日志（查看/追加迭代记录）
   cleanup   [--dry] [--confirm]                     清理无用文件（inject/日志/过期建议）
-  imp-calibrate --date "YYYY-MM-DD" --line <N> --imp 0.8  手动校准消息重要性
+  imp-calibrate --date "YYYY-MM-DD" --line <N> --imp 0.8  手动校准消息重要性（P1）
   reindex-all [--force]                              全量索引重建（语义+内容+索引+TODO）
   restore    [--list | --id <vid> | --from latest]   从版本快照恢复 MEMORY.md
   distill-proposals [--list | --apply <id>]         查看/审阅并应用长期记忆候选建议
   distill-reject --id <id> [--reason "..."]        拒绝某个候选建议
 
-v5 新增 — 调试 & 性能:
-  profile   [--clear]                               查看缓存命中率 + 探查器报告（--profile 运行搜索后）
-  tags      --query "关键词"                         按标签搜索
-
 查询模式说明:
-  search --mode keyword   → 复合线索评分（关键词+imp+时间衰减+话题连贯+superseded降权）
+  search --mode keyword   → 关键词精确+模糊匹配（默认）
   search --mode semantic  → 语义向量搜索（需先 embed）
-  search --mode hybrid    → 关键词 + 语义异步补全（关键词先出，语义200ms后补）
+  search --mode hybrid    → 关键词 + 语义融合排序
   search --mode recent    → 偏重短期记忆权重
   search --mode history   → 偏重长期记忆 & MEMORY.md 权重
-  search --as-of YYYY-MM-DD → 时间点查询：只返回指定日期之前的记忆（"那时候我们知道了什么"）
-  search --profile        → 同时输出各阶段耗时分析
 
-v5.1-elite 搜索增强（论文驱动，零 NN）:
-  · TSM 话题连贯性加分 — 同话题记忆即使时间久远也优先（MemSIF 论文）
-  · superseded 自动降权 — 被新证据推翻的旧记忆 ×0.15（TEPA 论文）
-  · as-of 时间点查询 — 还原历史视角（Engram 论文）
-  · hitFreq 命中效用补偿 — 常用记忆自动加权（MemSIF DUM）
-  search --profile        → 同时输出各阶段耗时分析
-
-v5 记忆回响:
+v4 记忆回响:
   context                        会话上下文（待办+问题+最近话题+话题续接）
   recall   --query "内容"        上下文闪回：搜索相关历史记忆（top 3）
   report   [--date YYYY-MM-DD] [--weekly] 每日/指定日期报告（--weekly 周报）
@@ -4226,7 +3274,7 @@ function main() {
   const has = (k) => Object.prototype.hasOwnProperty.call(opts, k);
 
   switch (cmd) {
-    case 'record':   cmdRecord(opts.role || 'user', opts.text || '', { tags: opts.tags ? String(opts.tags).split(',').map(t => t.trim()).filter(Boolean) : [] }); break;
+    case 'record':   cmdRecord(opts.role || 'user', opts.text || ''); break;
     case 'status':   cmdStatus(); break;
     case 'enable':   cmdSetEnabled(true); break;
     case 'disable':  cmdSetEnabled(false); break;
@@ -4246,60 +3294,6 @@ function main() {
     case 'cleanup':   cmdCleanup(opts); break;
     case 'qa':      cmdQA(opts); break;
     case 'distill-proposals': cmdDistillProposals(opts); break;
-    // v5 new commands
-    case 'profile-debug':
-      if (has('clear')) { memCache.clear(); out({ cacheCleared: true }); }
-      else out({ version: VERSION, cache: memCache.stats(), hitFreq: { entries: Object.keys(loadHitFreq()).length }, profiler: profileReport() });
-      break;
-    case 'tags':
-      cmdSearch(opts.query || '', { mode: 'keyword' }).then(r => {
-        const tagged = (r.results || []).filter(x => x.tags && x.tags.length);
-        out({ query: opts.query, taggedResults: tagged.length, results: tagged.slice(0, 10) });
-      }).catch(e => { console.error(e.message); process.exit(1); });
-      break;
-    // v5.2: 用户反馈评分 + 权重自校准
-    case 'rate': {
-      const last = loadLastSearch();
-      if (!last) { out({ error: '先运行 search --query "..." 再评分' }); break; }
-      const idx = parseInt(opts.result || '1', 10) - 1;
-      if (idx < 0 || idx >= (last.results || []).length) { out({ error: '序号无效，有效范围 1-' + (last.results || []).length }); break; }
-      const score = parseInt(opts.score || '0', 10);
-      if (score !== 1 && score !== -1) { out({ error: '评分必须为 +1(好) 或 -1(差)' }); break; }
-      const r = last.results[idx];
-      const ratings = loadRatings();
-      ratings.push({
-        query: last.query,
-        resultIdx: idx + 1,
-        score,
-        text: (r.text || '').slice(0, 120),
-        breakdown: r._breakdown || { imp: r.imp || 0.3, recency: 0.5, kwScore: 0, hfBoost: 0, layerW: 0.15 },
-        ts: nowIso(),
-      });
-      saveRatings(ratings);
-      // 负反馈 → hitFreq 衰减
-      if (score < 0) { try { decayHit((r.text || '').slice(0, 80)); } catch {} }
-      out({ rated: true, idx: idx + 1, score, totalRatings: ratings.length, tip: ratings.length >= 10 ? '已达到校准门槛，运行 recalibrate 拟合权重' : '还需 ' + (10 - ratings.length) + ' 条评分达到校准门槛' });
-      break;
-    }
-    case 'recalibrate': {
-      const ratings = loadRatings();
-      const result = recalibrateWeights(ratings);
-      if (opts.apply) {
-        const cfg = loadConfig();
-        if (result.newWeights) {
-          // 更新 config.json 中的 compound-cue 权重
-          cfg.weights = cfg.weights || {};
-          cfg.weights.compound = result.newWeights;
-          fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2));
-          // 清除配置缓存
-          delete require.cache[require.resolve(CONFIG_FILE)];
-          result.applied = true;
-          result.tip = '权重已写入 config.json，下次搜索生效';
-        }
-      }
-      out(result);
-      break;
-    }
     default:
       console.error(HELP);
       process.exit(cmd ? 1 : 0);

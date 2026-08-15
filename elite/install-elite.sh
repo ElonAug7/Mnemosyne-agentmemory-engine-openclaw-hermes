@@ -11,6 +11,8 @@
 #   bash install-elite.sh --no-ui                  # 不安装 Web UI
 #   bash install-elite.sh --hermes                 # Hermes 模式（设 HERMES_WORKSPACE）
 #   bash install-elite.sh --skill-dir /path/hermes/skills  # 指定 Hermes skill 目录
+#   bash install-elite.sh --hermes-plugin           # Hermes 原生插件模式（MemoryProvider ABC）
+#   bash install-elite.sh --plugin-dir /path/hermes/plugins  # 指定插件目录
 #
 # 安装内容:
 #   1. Node.js 版本检查
@@ -26,7 +28,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENGINE_DIR="$(dirname "$SCRIPT_DIR")"
 ELITE_DIR="$SCRIPT_DIR"
-VERSION="v6.0.0"
+VERSION="$(cat "$SCRIPT_DIR/../VERSION" 2>/dev/null | tr -d '[:space:]' || true)"
+[ -n "$VERSION" ] || VERSION="v6.2.0"
 
 # ---- 0. 参数解析 ----
 MEM_ROOT="${MNEMOSYNE_ROOT:-$HOME/.mnemosyne}"
@@ -34,6 +37,10 @@ INSTALL_UI=1
 HERMES_MODE=0
 SKILL_DIR=""
 NO_SKILL=0
+PLUGIN_MODE=0
+PLUGIN_DIR=""
+SKILL_DEST=""
+PLUGIN_DEST=""
 SHELL_RC=""
 
 while [[ $# -gt 0 ]]; do
@@ -43,15 +50,19 @@ while [[ $# -gt 0 ]]; do
     --hermes) HERMES_MODE=1; shift ;;
     --skill-dir) SKILL_DIR="$2"; shift 2 ;;
     --no-skill) NO_SKILL=1; shift ;;
+    --hermes-plugin) PLUGIN_MODE=1; shift ;;
+    --plugin-dir) PLUGIN_DIR="$2"; shift 2 ;;
     --help|-h)
       echo "用法: bash install-elite.sh [选项]"
       echo ""
       echo "选项:"
-      echo "  --root PATH      记忆存储目录（默认 ~/.mnemosyne）"
-      echo "  --no-ui          不安装 Web UI 服务"
-      echo "  --hermes         Hermes 模式（自动设置 HERMES_WORKSPACE）"
-      echo "  --skill-dir PATH Hermes skill 目录（自动检测失败时手动指定）"
-      echo "  --no-skill       不安装 Hermes Skill"
+      echo "  --root PATH        记忆存储目录（默认 ~/.mnemosyne）"
+      echo "  --no-ui            不安装 Web UI 服务"
+      echo "  --hermes           Hermes 模式（自动设置 HERMES_WORKSPACE）"
+      echo "  --skill-dir PATH   Hermes skill 目录（自动检测失败时手动指定）"
+      echo "  --no-skill         不安装 Hermes Skill"
+      echo "  --hermes-plugin    安装 Hermes 原生插件（MemoryProvider ABC，推荐）"
+      echo "  --plugin-dir PATH  Hermes 插件目录（自动检测失败时手动指定）"
       exit 0
       ;;
     *) echo "未知参数: $1"; exit 1 ;;
@@ -211,6 +222,11 @@ if [ $NO_SKILL -eq 0 ]; then
       "$HOME/hermes/skills"
       "$HOME/.local/share/hermes/skills"
       "$HOME/workspace/skills/mnemosyne"
+      # Windows：Hermes 桌面版实际位置（AppData\Local，种子用户桦染霜&清弦AI 反馈）
+      "${LOCALAPPDATA:-}/hermes/skills"
+      "${LOCALAPPDATA:-}/hermes/plugins"
+      "${APPDATA:-}/hermes/skills"
+      "${APPDATA:-}/hermes/plugins"
     )
     for d in "${DETECTED_DIRS[@]}"; do
       if [ -d "$d" ]; then
@@ -260,6 +276,58 @@ if [ $NO_SKILL -eq 0 ]; then
     echo ""
     echo "   或者指定目录重装:"
     echo "      bash install-elite.sh --skill-dir /path/to/hermes/skills"
+  fi
+fi
+
+# ---- 5.5 Hermes 原生插件安装（MemoryProvider ABC，推荐路线）----
+if [ $PLUGIN_MODE -eq 1 ]; then
+  echo ""
+  echo "🔌 Hermes 原生插件（MemoryProvider ABC）..."
+
+  PLUGIN_SRC="$ELITE_DIR/plugins/hermes-mnemosyne"
+  PLUGIN_DEST=""
+
+  if [ -n "$PLUGIN_DIR" ] && [ -d "$PLUGIN_DIR" ]; then
+    PLUGIN_DEST="$PLUGIN_DIR/mnemosyne"
+  fi
+
+  if [ -z "$PLUGIN_DEST" ]; then
+    # 自动检测：Hermes 桌面版实际位置（AppData\Local）+ 常见 Unix 位置
+    PLUGIN_DIRS=(
+      "$HERMES_HOME/plugins"
+      "${LOCALAPPDATA:-}/hermes/plugins"
+      "${APPDATA:-}/hermes/plugins"
+      "$HOME/.hermes/plugins"
+      "$HOME/hermes/plugins"
+      "$HOME/.local/share/hermes/plugins"
+    )
+    for d in "${PLUGIN_DIRS[@]}"; do
+      if [ -d "$d" ]; then
+        PLUGIN_DEST="$d/mnemosyne"
+        echo "   📍 自动检测到插件目录: $d"
+        break
+      fi
+    done
+  fi
+
+  if [ -z "$PLUGIN_DEST" ]; then
+    echo "   ⚠️  未检测到 Hermes 插件目录，跳过。"
+    echo "      可用 --plugin-dir /path/to/hermes/plugins 手动指定"
+  else
+    rm -rf "$PLUGIN_DEST"
+    mkdir -p "$PLUGIN_DEST"
+    cp -r "$PLUGIN_SRC/." "$PLUGIN_DEST/"
+
+    # 注入绝对路径（bridge + 数据根目录）
+    sed -i "s|@@BRIDGE_PATH@@|$ELITE_DIR/hermes-bridge.js|g" "$PLUGIN_DEST/__init__.py" 2>/dev/null || true
+    sed -i "s|@@ROOT_PATH@@|$MEM_ROOT|g" "$PLUGIN_DEST/__init__.py" 2>/dev/null || true
+
+    echo "   ✅ 插件已安装: $PLUGIN_DEST"
+    echo "   "
+    echo "   激活（仅此一步）:"
+    echo "     hermes config set memory.provider mnemosyne"
+    echo "   "
+    echo "   ⚠️  provider 在 agent 初始化时加载，配置改动需 /new 或重启"
   fi
 fi
 
@@ -368,6 +436,9 @@ if [ $SELFTEST_OK -eq 0 ]; then
     echo "   Skill:    $SKILL_DEST ← Hermes 重启后自动加载"
   elif [ $NO_SKILL -eq 0 ]; then
     echo "   Skill:    ⚠️  未自动安装，使用 --skill-dir 指定目录"
+  fi
+  if [ $PLUGIN_MODE -eq 1 ] && [ -n "$PLUGIN_DEST" ]; then
+    echo "   插件:     $PLUGIN_DEST ← hermes config set memory.provider mnemosyne"
   fi
   echo ""
   if [ -n "$SHELL_RC" ]; then

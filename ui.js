@@ -20,8 +20,7 @@ const fs = require('fs');
 const path = require('path');
 const { execFile, execFileSync } = require('child_process');
 
-const ROOT = process.env.OPENCLAW_WORKSPACE || path.join(require('os').homedir(), '.openclaw', 'workspace');
-const ENGINE = path.join(ROOT, 'tools', 'memory-engine', 'engine.js');
+const ROOT = process.env.MNEMOSYNE_ROOT || process.env.HERMES_WORKSPACE || process.env.OPENCLAW_WORKSPACE || path.join(require('os').homedir(), '.mnemosyne');
 const PORT = parseInt(process.env.MEMORY_UI_PORT || '8765', 10);
 const HOST = '127.0.0.1';   // 只监听本机，安全
 const TRASH_DIR = path.join(ROOT, 'memory', '.trash');
@@ -29,7 +28,16 @@ const TRASH_DIR = path.join(ROOT, 'memory', '.trash');
 // 简易 token 鉴权：启动时生成随机 8 位 token，无 token 拒绝访问
 // 仅当外部访问（非 127.0.0.1 / ::1 / localhost）时生效
 const crypto = require('crypto');
-const UI_TOKEN = process.env.MEMORY_UI_TOKEN || crypto.randomBytes(4).toString('hex');
+const UI_TOKEN = process.env.MEMORY_UI_TOKEN || crypto.randomBytes(16).toString('hex');
+
+// v6.2 安全：DNS rebinding 防护 — 只接受本机 Host 头
+// 攻击网页通过 DNS rebinding 让浏览器以 127.0.0.1 访问本服务时，
+// Host 头会是攻击者域名，据此拦截（本机正常访问不受影响）
+function hostIsLoopback(hostHeader) {
+  if (!hostHeader) return true; // 无 Host 头的本地客户端（老 curl 等），浏览器必带 Host
+  const host = String(hostHeader).split(':')[0].replace(/^\[|\]$/g, '').toLowerCase();
+  return host === '127.0.0.1' || host === 'localhost' || host === '::1';
+}
 
 function checkAuth(req) {
   // 本机访问免检
@@ -126,9 +134,17 @@ function fmtAge(ms) {
   return Math.floor(h / 24) + '天';
 }
 
+// 引擎调用统一环境注入：engine.js 只认 OPENCLAW_WORKSPACE，
+// 把 UI 解析出的 ROOT 同步注入（Hermes/独立部署无 OPENCLAW_WORKSPACE 也正确）
+const ENGINE_ENV = { ...process.env, OPENCLAW_WORKSPACE: ROOT, MNEMOSYNE_ROOT: ROOT };
+// engine.js 实际位置：优先同目录（ui.js 旁），旧式 ROOT/tools 布局仅作回退
+const ENGINE = fs.existsSync(path.join(__dirname, 'engine.js'))
+  ? path.join(__dirname, 'engine.js')
+  : path.join(ROOT, 'tools', 'memory-engine', 'engine.js');
+
 function runEngine(args) {
   return new Promise((resolve) => {
-    execFile('node', [path.join(__dirname, 'engine.js'), ...args], { timeout: 10000 }, (err, stdout, stderr) => {
+    execFile('node', [ENGINE, ...args], { timeout: 10000, env: ENGINE_ENV }, (err, stdout, stderr) => {
       resolve({ ok: !err, out: stdout.trim(), err: (stderr || '').trim() });
     });
   });
@@ -200,6 +216,11 @@ function sanitizeHTML(text) {
 const PAGE = fs.readFileSync(path.join(__dirname, 'ui-page.html'), 'utf8');
 
 const server = http.createServer(async (req, res) => {
+  // v6.2: DNS rebinding 拦截 — 非本机 Host 头一律 403
+  if (!hostIsLoopback(req.headers.host)) {
+    res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' });
+    return res.end('Forbidden: invalid Host header');
+  }
   const url = new URL(req.url, `http://${HOST}`);
   const json = (o) => { res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(o)); };
 
@@ -386,7 +407,7 @@ const server = http.createServer(async (req, res) => {
     // ═══════ P2+P3 GET APIs ═══════
     if (url.pathname === '/api/stats') {
       try {
-        const stdout = execFileSync(process.execPath, [ENGINE, 'stats'], { encoding: 'utf8', timeout: 5000, cwd: ROOT });
+        const stdout = execFileSync(process.execPath, [ENGINE, 'stats'], { encoding: 'utf8', timeout: 5000, cwd: ROOT, env: ENGINE_ENV });
         return json(JSON.parse(stdout));
       } catch (e) { return json({ error: e.message, daily: {} }); }
     }

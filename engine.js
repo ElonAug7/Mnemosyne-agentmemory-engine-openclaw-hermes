@@ -24,7 +24,11 @@
  * P2: embedding可选 + UI安全 + 恢复/索引重建
  */
 
-const VERSION = 'v6.1.0';
+// 版本单一真相：优先读同目录 VERSION 文件，缺失时回退内置常量
+const VERSION = (() => {
+  try { return fs.readFileSync(path.join(__dirname, 'VERSION'), 'utf8').trim() || 'v6.2.0'; }
+  catch { return 'v6.2.0'; }
+})();
 'use strict';
 
 const fs = require('fs');
@@ -313,19 +317,12 @@ function hashStr(s, mod) {
   return (h >>> 0).toString(36);
 }
 
-// 内容哈希（用于版本比较）
-function contentHash(text) {
-  let h = 2166136261;
-  for (let i = 0; i < text.length; i++) {
-    h ^= text.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return (h >>> 0).toString(36);
-}
 
 function ensureDirs() {
   fs.mkdirSync(ROOT, { recursive: true });
   for (const dir of Object.values(D)) fs.mkdirSync(dir, { recursive: true });
+  // v6.2 安全：数据目录仅属主可读写（部署即带；Windows 上 chmod 为无害操作）
+  try { fs.chmodSync(MEM, 0o700); } catch {}
   if (!fs.existsSync(LONG_FILE))  fs.writeFileSync(LONG_FILE, loadTemplate('MEMORY.md'));
   if (!fs.existsSync(INDEX_FILE)) fs.writeFileSync(INDEX_FILE, loadTemplate('index.md'));
   if (!fs.existsSync(PROTO_FILE)) fs.writeFileSync(PROTO_FILE, loadTemplate('MEMORY-PROTOCOL.md'));
@@ -361,6 +358,22 @@ function saveState(s) {
   fs.renameSync(tmp, STATE_FILE);
 }
 
+// ============================================================
+// v6.2 安全加固：原子写入 — 先写临时文件再 rename（同盘原子）
+// 防进程中断写一半损坏关键状态文件。仅作用于写入路径，搜索零开销
+// ============================================================
+function atomicWrite(file, content) {
+  const tmp = file + '.tmp-' + process.pid;
+  try {
+    fs.writeFileSync(tmp, content);
+    fs.renameSync(tmp, file);
+    return true;
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch {}
+    return false;
+  }
+}
+
 function readMaybeGz(full) {
   const buf = fs.readFileSync(full);
   if (full.endsWith('.gz')) return zlib.gunzipSync(buf).toString('utf8');
@@ -390,7 +403,7 @@ const IMP_CHITCHAT = /^(哈哈+|嗯+|ok\s*$|okay\s*$|谢谢\s*$|收到\s*$|明�
 //   +0.05 长度>500字符（长消息信息量大）
 // 封顶: 1.0
 // 闲聊降级: 仅含哈哈/嗯/好的/ok/谢谢/收到/明白 等 → 固定 0.1
-// 手动校准: engine.js imp-calibrate --date "2026-08-06" --line <N> --imp 0.8
+// 手动校准: engine.js recalibrate（基于累积评分重新拟合权重，--apply 写入 config.json）
 
 // P2: 中文分词 — 零依赖 2-gram + 单字过滤，替代 split(/\s+/) 提升中文搜索命中率
 function tokenizeChinese(text) {
@@ -794,8 +807,9 @@ const TODO_NOISE = [
   /^[0-9a-f]{8}-[0-9a-f]{4}/i,
   /^(很多|一些|这个|那个|这些|那些|什么|怎么|为什么)/,
   /[,，]"$/,
-  /[）\)】」]$/,
   /^(天地|宇宙|万物|世间|人生)/,
+  /^\s*\|/,              // v6.2: markdown 表格行（"| # | 待办" 等提取噪音）
+  /^#{1,6}\s/,           // v6.2: markdown 标题行
 ];
 
 function isTodoNoise(text) {
@@ -816,7 +830,7 @@ function loadTodos() {
 
 function saveTodos(todos) {
   ensureDirs();
-  fs.writeFileSync(TODOS_FILE, JSON.stringify(todos, null, 2));
+  atomicWrite(TODOS_FILE, JSON.stringify(todos, null, 2));
   // 渲染 Markdown 视图
   let md = `# 待办清单\n\n> 引擎自动提取 + 手动添加。完成：\`engine.js todos --done --id <N>\`，更新：\`engine.js todos\`\n\n`;
   const open = todos.filter(t => t.status === 'open');
@@ -826,22 +840,9 @@ function saveTodos(todos) {
   for (const t of open) md += `- [ ] ${t.text}  \`#${t.id}${t.src ? ' | ' + t.src : ''}\`\n`;
   md += `\n## 已完成（最近 ${done.length}）\n\n`;
   for (const t of done) md += `- [x] ${t.text}  \`#${t.id}\`\n`;
-  fs.writeFileSync(TODOS_MD, md);
+  atomicWrite(TODOS_MD, md);
 }
 
-function extractTodosFromText(text, src) {
-  const found = [];
-  for (const pat of TODO_PATTERNS) {
-    pat.lastIndex = 0;
-    let m;
-    while ((m = pat.exec(text)) !== null) {
-      const item = m[1].trim();
-      if (!isTodoNoise(item) && item.length <= 120 && !found.includes(item)) found.push(item);
-      if (found.length > 20) break;
-    }
-  }
-  return found.map(text2 => ({ text: text2, src }));
-}
 
 function extractTodos() {
   const todos = loadTodos();
@@ -865,18 +866,11 @@ function extractTodos() {
     let txt; try { txt = fs.readFileSync(path.join(D.medium, f), 'utf8'); } catch { continue; }
     for (const line of txt.split('\n')) {
       const m = line.match(/^\s*-\s*(?:待办|TODO)[：:]\s*(.+)$/i);
-      if (m) m[1].split(/[;；]/).map(s => s.trim()).filter(s => s && s !== '无' && s !== '-' && s !== '（空）').forEach(t => add(t, `medium/${f}`));
+      if (m) m[1].split(/[;；]/).map(s => s.trim()).filter(s => s && s !== '无' && s !== '-' && s !== '（空）' && !isTodoNoise(s)).forEach(t => add(t, `medium/${f}`));
     }
   }
 
-  // 2. 从最近 7 天短期对话提取 — 已禁用（噪音太多）
-  // 待办现在只从 medium 摘要块和手动添加获取
-  /* 已禁用：
-  for (const f of fs.readdirSync(D.short)) {
-    ...
-  }
-  */
-
+  // 2. 从最近 7 天短期对话提取 — 已禁用（噪音太多，待办只从 medium 摘要块和手动添加获取）
   saveTodos(todos);
   return { added, total: todos.length, open: todos.filter(t => t.status === 'open').length };
 }
@@ -989,7 +983,7 @@ function buildWorkingMemory() {
     knowledge_gaps: knowledge_gaps.length ? knowledge_gaps : undefined,
     source_msg_count: recent.length, updated_at: nowIso(),
   };
-  fs.writeFileSync(WORKING_FILE, JSON.stringify(wm, null, 2));
+  atomicWrite(WORKING_FILE, JSON.stringify(wm, null, 2));
   return wm;
 }
 
@@ -1074,7 +1068,7 @@ function buildInjectableSummary(day) {
   };
 
   const outFile = path.join(D.shortInject, day + '.json');
-  fs.writeFileSync(outFile, JSON.stringify(inject, null, 2));
+  atomicWrite(outFile, JSON.stringify(inject, null, 2));
   return inject;
 }
 
@@ -1214,6 +1208,76 @@ function buildAutoSummaryBlock(msgs) {
   return { text: lines.join('\n'), title, topics, tags, lastTs: new Date(lastTs).toISOString() };
 }
 
+// ============================================================
+// v6.2: medium 摘要块去重 — 2-gram 相似度（零依赖纯算法）
+// 解决 08-11 式重复摘要：同一窗口被多次整合，每块只增几行
+// ============================================================
+function twoGramSet(text) {
+  const s = new Set();
+  const t = String(text || '').replace(/\s+/g, '');
+  for (let i = 0; i < t.length - 1; i++) s.add(t.slice(i, i + 2));
+  return s;
+}
+
+function blockSimilarity(a, b) {
+  // 去除标题行与质量自评注释后再比较（模板噪音不参与）
+  const strip = t => String(t || '')
+    .split('\n')
+    .filter(l => !/^##\s/.test(l.trim()) && !/^<!-- quality/.test(l.trim()))
+    .join('');
+  const ga = twoGramSet(strip(a)), gb = twoGramSet(strip(b));
+  if (!ga.size || !gb.size) return 0;
+  let inter = 0;
+  for (const x of ga) if (gb.has(x)) inter++;
+  // 包含度：小块的 gram 有多大比例出现在大块里（重复链中旧块是新块的子集）
+  return inter / Math.min(ga.size, gb.size);
+}
+
+function splitMediumBlocks(content) {
+  const blocks = [];
+  const re = /^## .*$/gm;
+  let m, lastStart = -1;
+  while ((m = re.exec(content)) !== null) {
+    if (lastStart >= 0) blocks.push({ start: lastStart, end: m.index });
+    lastStart = m.index;
+  }
+  if (lastStart >= 0) blocks.push({ start: lastStart, end: content.length });
+  return blocks;
+}
+
+function dedupeMediumFiles(dryRun) {
+  ensureDirs();
+  const stat = { dryRun: !!dryRun, files: [], removedBlocks: 0 };
+  for (const f of fs.readdirSync(D.medium).sort()) {
+    if (!f.endsWith('.md')) continue;
+    const fp = path.join(D.medium, f);
+    const content = fs.readFileSync(fp, 'utf8');
+    const blocks = splitMediumBlocks(content);
+    if (blocks.length < 2) continue;
+    const keep = [];
+    let removed = 0;
+    for (const b of blocks) {
+      const text = content.slice(b.start, b.end);
+      const prev = keep.length ? keep[keep.length - 1].text : null;
+      if (prev && blockSimilarity(prev, text) >= 0.7) {
+        // 与上一个保留块高度相似 → 旧块被新块替换（新块窗口更大更完整）
+        keep[keep.length - 1] = { ...b, text };
+        removed++;
+      } else {
+        keep.push({ ...b, text });
+      }
+    }
+    if (removed > 0) {
+      const header = blocks[0].start > 0 ? content.slice(0, blocks[0].start) : '';
+      const body = keep.map(k => k.text).join('').replace(/\n{3,}/g, '\n\n');
+      if (!dryRun) atomicWrite(fp, (header + body).trimEnd() + '\n');
+      stat.files.push({ file: `medium/${f}`, before: blocks.length, after: keep.length, removed });
+      stat.removedBlocks += removed;
+    }
+  }
+  return stat;
+}
+
 // P0: 批量补旧摘要块的标签和质量自评（纯正则，不调 LLM）
 function retagAllBlocks() {
   ensureDirs();
@@ -1256,7 +1320,7 @@ function retagAllBlocks() {
       newSections.push(sec);
     }
     if (changed) {
-      fs.writeFileSync(medFile, newSections.join('## '));
+      atomicWrite(medFile, newSections.join('## '));
       filesChanged++;
     }
   }
@@ -1328,7 +1392,15 @@ function autoConsolidate(opts = {}) {
   if (timeFallback) block.quality = 'low-confidence (time-fallback)';
   const medFile = path.join(D.medium, today() + '.md');
   let med = fs.existsSync(medFile) ? fs.readFileSync(medFile, 'utf8') : `# ${today()} 中期摘要\n`;
-  fs.writeFileSync(medFile, med.trimEnd() + '\n\n' + block.text + '\n');
+  // v6.2: 相邻块去重 — 新块与文件最后一块高度相似时替换而非追加（防重复摘要）
+  const medBlocks = splitMediumBlocks(med);
+  const lastBlockText = medBlocks.length ? med.slice(medBlocks[medBlocks.length - 1].start, medBlocks[medBlocks.length - 1].end) : '';
+  if (lastBlockText && blockSimilarity(lastBlockText, block.text) >= 0.7) {
+    med = med.slice(0, med.lastIndexOf(lastBlockText)) + block.text;
+  } else {
+    med = med.trimEnd() + '\n\n' + block.text + '\n';
+  }
+  atomicWrite(medFile, med);
   try { reindex(); } catch {}
   // v4: 自动更新用户画像
   try { cmdProfile({update: true}); } catch {}
@@ -1411,12 +1483,27 @@ function saveDistillProposal(entry) {
   const dp = loadDistillProposals();
   dp.proposals.push({ ...entry, id: dp.proposals.length + 1, status: 'pending', created_at: nowIso() });
   dp.updated_at = nowIso();
-  fs.writeFileSync(DISTILL_PROPOSALS_FILE, JSON.stringify(dp, null, 2));
+  atomicWrite(DISTILL_PROPOSALS_FILE, JSON.stringify(dp, null, 2));
   // 跟踪最后蒸馏时间（用于离线保护）
   const s = loadState();
   s.lastDistillAt = nowIso();
   saveState(s);
   return dp.proposals.length;
+}
+
+function cmdDistillReject(opts) {
+  ensureDirs();
+  const id = parseInt(opts.id, 10);
+  if (!Number.isFinite(id)) return out({ error: '需要 --id <数字>' });
+  const dp = loadDistillProposals();
+  const p = dp.proposals.find(x => x.id === id);
+  if (!p) return out({ error: `未找到提案 #${id}` });
+  if (p.status !== 'pending') return out({ error: `提案 #${id} 已是 ${p.status} 状态` });
+  p.status = 'rejected';
+  p.reason = opts.reason || null;
+  p.reviewed_at = nowIso();
+  atomicWrite(DISTILL_PROPOSALS_FILE, JSON.stringify(dp, null, 2));
+  out({ ok: true, id, status: 'rejected', reason: p.reason, pendingLeft: dp.proposals.filter(x => x.status === 'pending').length });
 }
 
 function cmdDistillProposals(opts) {
@@ -1453,13 +1540,13 @@ function cmdDistillProposals(opts) {
       mem += `\n\n${sectionMarker}\n- ${p.content}\n`;
       p.status = 'applied';
     }
-    fs.writeFileSync(LONG_FILE, mem);
+    atomicWrite(LONG_FILE, mem);
     appendDevLog(`审阅通过: ${p.content.slice(0, 40)}…`);
     appendGrowthLog(p.content, p.section);
   } finally { releaseLock(); }
 
   dp.updated_at = nowIso();
-  fs.writeFileSync(DISTILL_PROPOSALS_FILE, JSON.stringify(dp, null, 2));
+  atomicWrite(DISTILL_PROPOSALS_FILE, JSON.stringify(dp, null, 2));
   out({ applied: p.status === 'applied', proposal: p });
 }
 
@@ -2460,6 +2547,50 @@ const CLEANUP_RULES = {
   dryRun: false,
 };
 
+// ============================================================
+// v6.2: Git 备份（health 检查推荐运行 backup；此前为假命令）
+// ============================================================
+function runGit(args, cwd) {
+  try {
+    const r = require('child_process').spawnSync('git', args, { cwd, encoding: 'utf8' });
+    return { ok: r.status === 0, stdout: (r.stdout || '').trim(), stderr: (r.stderr || '').trim() };
+  } catch (e) {
+    return { ok: false, stdout: '', stderr: String(e) };
+  }
+}
+
+function cmdBackup(opts) {
+  ensureDirs();
+  // 备份对象：整个工作区（含 memory/），与 health 检查的 ROOT/.git 对齐
+  const cwd = ROOT;
+  if (!fs.existsSync(path.join(cwd, '.git'))) {
+    const init = runGit(['init'], cwd);
+    if (!init.ok) return out({ ok: false, action: 'backup', error: 'git init 失败: ' + init.stderr });
+  }
+  // 只提交记忆数据（memory/）+ VERSION 等引擎根文件，不碰无关内容
+  const add = runGit(['add', 'memory'], cwd);
+  const msg = opts.msg || `memory backup ${nowIso()}`;
+  const commit = runGit([
+    '-c', 'user.name=mnemosyne', '-c', 'user.email=mnemosyne@local',
+    'commit', '-m', msg, '--allow-empty', '--quiet',
+  ], cwd);
+  const log = runGit(['log', '--oneline', '-5'], cwd);
+  out({
+    ok: commit.ok,
+    action: 'backup',
+    message: msg,
+    repo: path.join(cwd, '.git'),
+    lastCommits: log.ok ? log.stdout.split('\n').filter(Boolean) : [],
+    error: commit.ok ? null : (commit.stderr || 'commit 失败'),
+  });
+}
+
+function cmdBackupLog() {
+  ensureDirs();
+  const log = runGit(['log', '--oneline', '-20'], ROOT);
+  out({ ok: log.ok, action: 'backup-log', commits: log.ok ? log.stdout.split('\n').filter(Boolean) : [], error: log.ok ? null : log.stderr });
+}
+
 function cmdCleanup(opts) {
   ensureDirs();
   const dryRun = opts.dry !== undefined;
@@ -2541,6 +2672,11 @@ function cmdCleanup(opts) {
 
   // 6. 清理空目录
   if (CLEANUP_RULES.emptyDirs && !dryRun) {
+    const dirsToCheck = [
+      D.index, D.shortRaw, D.shortWorking, D.shortInject, D.shortArchive,
+      D.medium, D.mediumArchive, D.long, D.engine, D.versions,
+      path.join(MEM, '.trash'),
+    ];
     for (const dir of dirsToCheck) {
       try {
         if (fs.existsSync(dir) && !fs.readdirSync(dir).length) {
@@ -2885,7 +3021,7 @@ function checkSupersedeFromMessages(msgs) {
       const matchCount = topics.filter(tp => longLower.includes(tp.toLowerCase())).length;
       if (matchCount >= 2 && !longContent.includes('[superseded]')) {
         const marked = longContent + `\n\n<!-- [superseded] 被新证据推翻: ${msg.text.slice(0, 80)} — ${nowIso()} -->\n`;
-        fs.writeFileSync(LONG_FILE, marked);
+        atomicWrite(LONG_FILE, marked);
         totalSuperseded++;
         allAffected.push('MEMORY.md');
       }
@@ -2895,9 +3031,6 @@ function checkSupersedeFromMessages(msgs) {
   return { superseded: totalSuperseded, affected: allAffected, candidatesChecked: candidateMsgs.length };
 }
 
-function checkSupersede(newText) {
-  return checkSupersedeFromMessages([{ text: newText, imp: 0.6 }]);
-}
 
 // ============================================================
 // v6: Muscle Memory 肌肉记忆（Muscle Memory paper 2026）
@@ -3232,16 +3365,6 @@ function trackMemoryHit(lineText) {
   if (keys.length > 500) { const trimmed = {}; for (const k of keys.slice(0, 500)) trimmed[k] = stale[k]; stale = trimmed; }
   fs.writeFileSync(STALE_FILE, JSON.stringify(stale, null, 2));
 }
-function getStaleEntries(daysThreshold = 60) {
-  let stale = {};
-  try { stale = JSON.parse(fs.readFileSync(STALE_FILE, 'utf8')); } catch {}
-  const cutoff = Date.now() - daysThreshold * 86400000;
-  const result = [];
-  for (const [key, v] of Object.entries(stale)) {
-    if (new Date(v.hit).getTime() < cutoff) result.push({ text: v.text, lastHit: v.hit, daysStale: Math.floor((Date.now() - new Date(v.hit).getTime()) / 86400000) });
-  }
-  return result.sort((a,b) => b.daysStale - a.daysStale);
-}
 
 function appendDevLog(entry) {
   ensureDirs();
@@ -3332,61 +3455,6 @@ function highlight(text, terms) {
   return s;
 }
 
-function keywordSearch(query) {
-  const q = query.toLowerCase();
-  const terms = tokenizeChinese(query);
-  const results = [];
-
-  for (const { full, rel } of allMemoryFiles()) {
-    try {
-      // P1: gz 文件先用轻量索引筛选，命中才解压
-      if (full.endsWith('.gz') && rel.includes('short/archive/')) {
-        const idxFile = path.join(path.dirname(full), path.basename(full, '.jsonl.gz') + '.idx.json');
-        if (fs.existsSync(idxFile)) {
-          try {
-            const idx = JSON.parse(fs.readFileSync(idxFile, 'utf8'));
-            const matched = idx.some(e => {
-              const combined = (e.kw || '') + ' ' + q;
-              return combined.toLowerCase().includes(q) || terms.some(t => combined.toLowerCase().includes(t));
-            });
-            if (!matched) continue; // 索引无匹配，跳过解压
-          } catch {}
-        }
-      }
-
-      const txt = readMaybeGz(full);
-      const lines = txt.split('\n');
-      const hits = [];
-      lines.forEach((line, i) => {
-        const lower = line.toLowerCase();
-        const matched = lower.includes(q) || terms.some(t => lower.includes(t.toLowerCase()));
-        if (!matched) return;
-        // 上下文：前后各 1 行
-        const ctx = [];
-        if (i > 0 && lines[i - 1].trim()) ctx.push(lines[i - 1].trim().slice(0, 120));
-        ctx.push(line.trim().slice(0, 300));
-        if (i < lines.length - 1 && lines[i + 1].trim()) ctx.push(lines[i + 1].trim().slice(0, 120));
-        // JSONL 行：尝试解析 imp 加权
-        let imp = null;
-        if (full.endsWith('.jsonl')) {
-          try { const o = JSON.parse(line); if (typeof o.imp === 'number') imp = o.imp; } catch {}
-        }
-        hits.push({
-          line: i + 1,
-          text: highlight(line.trim().slice(0, 220), terms),
-          context: ctx.map((c, j) => j === (i > 0 ? 1 : 0) ? highlight(c, terms) : c),
-          imp,
-        });
-        if (hits.length >= 10) return; // 单文件最多 10 条
-      });
-      if (!hits.length) continue;
-      const impBoost = hits.reduce((acc, h) => acc + (h.imp || 0.3), 0) / hits.length;
-      results.push({ file: rel, hits, score: hits.length * (1 + impBoost), archived: full.endsWith('.gz') });
-    } catch { /* 跳过 */ }
-  }
-  results.sort((a, b) => b.score - a.score);
-  return results;
-}
 
 async function semanticSearch(query, topN = 8) {
   const vec = loadVectors();
@@ -4152,34 +4220,18 @@ memory.md: nightly distill → proposals 文件 → agent 审阅确认后写入�
   search    --query "关键词" [--mode keyword|semantic|hybrid|recent|history] [--as-of YYYY-MM-DD] [--profile]  多模式搜索
   stats                                             统计仪表盘
   health                                            健康度检查
-  save      --file "path" --text "content"          保存文件（MEMORY.md 自动版本快照）
-  export                                            导出为 tar.gz
-  timeline                                          时间轴视图
 
 v5 核心 — 语义智能:
   embed     [--force]                               构建/刷新语义向量索引（远端 > 本地回退）
 
-v5 核心 — 版本 & 冲突:
-  version   [--force]                              MEMORY.md 版本快照（自动节流 1h）
-  version-history                                  查看版本历史（最近 50 个）
-  version-diff [--v1 <id> --v2 <id>]               对比两个版本的差异
-  conflict                                         检测 MEMORY.md 中可能的矛盾条目
-
 v5 核心 — 待办 & 备份:
   todos     [--add "内容" | --done <id>]            待办清单（提取/添加/完成）
-  backup    [--msg "提交信息"]                        Git 备份记忆文件
+  medium-dedupe [--confirm]                         压缩 medium 摘要中的重复块（相似度≥0.7）
+  backup    [--msg "提交信息"]                        Git 备份记忆文件（无仓库时自动 init）
   backup-log                                        查看备份历史
 
-v5 核心 — 会话 & 权限:
-  sessions                                          多会话聚合视图（48h 内有效）
-  permission [--agent <id> --level read|write|admin]  查看/设置访问权限
-  permission --default read|write                   设置默认权限级别
-  config    [--get key | --set key --value val | --reset]  查看/修改配置
-  devlog    [--log "事件"]                          开发日志（查看/追加迭代记录）
+v5 核心 — 清理 & 维护:
   cleanup   [--dry] [--confirm]                     清理无用文件（inject/日志/过期建议）
-  imp-calibrate --date "YYYY-MM-DD" --line <N> --imp 0.8  手动校准消息重要性
-  reindex-all [--force]                              全量索引重建（语义+内容+索引+TODO）
-  restore    [--list | --id <vid> | --from latest]   从版本快照恢复 MEMORY.md
   distill-proposals [--list | --apply <id>]         查看/审阅并应用长期记忆候选建议
   distill-reject --id <id> [--reason "..."]        拒绝某个候选建议
 
@@ -4208,9 +4260,6 @@ v5 记忆回响:
   recall   --query "内容"        上下文闪回：搜索相关历史记忆（top 3）
   report   [--date YYYY-MM-DD] [--weekly] 每日/指定日期报告（--weekly 周报）
   profile                        用户画像（偏好/事实/项目）
-  ask      --query "决定|待办|偏好|话题" [--days N]  记忆问答（默认14天，支持--days 90）
-  time-travel  --list | --restore <id>  记忆时间旅行（查看/恢复历史版本）
-  stale    [--days 60]           过期记忆检测（默认60天未命中）
 `;
 
 function main() {
@@ -4243,9 +4292,13 @@ function main() {
     case 'profile':  cmdProfile(opts); break;
     case 'embed':    cmdEmbed(opts).catch(e => { console.error(e.message); process.exit(1); }); break;
     case 'todos':    cmdTodos(opts); break;
+    case 'medium-dedupe': out(dedupeMediumFiles(!has('confirm'))); break;
+    case 'backup':   cmdBackup(opts); break;
+    case 'backup-log': cmdBackupLog(); break;
     case 'cleanup':   cmdCleanup(opts); break;
     case 'qa':      cmdQA(opts); break;
     case 'distill-proposals': cmdDistillProposals(opts); break;
+    case 'distill-reject': cmdDistillReject(opts); break;
     // v5 new commands
     case 'profile-debug':
       if (has('clear')) { memCache.clear(); out({ cacheCleared: true }); }

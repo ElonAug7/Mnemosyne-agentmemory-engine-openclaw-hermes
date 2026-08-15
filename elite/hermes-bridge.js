@@ -39,7 +39,11 @@ const fs = require('fs');
 
 const ENGINE_PATH = path.resolve(__dirname, '..', 'engine.js');
 const platform = require('./platform');
-const VERSION = 'v6.0.0';
+// 版本单一真相：优先读 engine 根目录 VERSION 文件
+const VERSION = (() => {
+  try { return require('fs').readFileSync(require('path').join(__dirname, '..', 'VERSION'), 'utf8').trim() || 'v6.2.0'; }
+  catch { return 'v6.2.0'; }
+})();
 
 // ============================================================
 // 引擎调用
@@ -353,7 +357,7 @@ function buildMemoryInjection(flashbacks, todos, questions) {
   }
 
   if (parts.length === 0) {
-    parts.push('（无相关记忆）');
+    return ''; // 空记忆返回空字符串，避免向系统提示注入噪声
   }
 
   return parts.join('\n');

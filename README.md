@@ -200,6 +200,28 @@ node tools/memory-engine/elite/mnemosyne-elite.js search --query "关键词"
 
 详见 `elite/README.md` · Hermes Skill 文档: `elite/hermes-skill.md`
 
+## 🔒 Security · 安全默认值
+
+Mnemosyne 默认即安全，部署者无需额外配置：
+
+| 安全项 | 默认行为 |
+|---|---|
+| 安装权限 | **零 sudo** — 全部用户级目录，不碰系统文件 |
+| Web UI 监听 | 仅 `127.0.0.1`（代码写死，外网不可达） |
+| Web UI 访问 | 自动生成强 token（128 位）；或设 `MEMORY_UI_TOKEN` 环境变量固定 |
+| DNS rebinding 防护 | 只接受本机 Host 头（127.0.0.1/localhost/::1），伪造 Host 一律 403 |
+| CSRF 防护 | POST 请求校验 Origin/Referer 仅允许本地来源 |
+| XSS 防护 | Markdown 渲染前过滤 script/iframe/事件处理器等 |
+| 数据目录权限 | 记忆目录自动 chmod 700（仅属主可读写，部署即生效） |
+| 路径穿越 | 文件浏览白名单（仅记忆目录 + MEMORY.md） |
+| 网络依赖 | 零 — 语义检索为可选功能，默认不联网 |
+| API key | 不需要任何 key 即可运行（语义增强才需要自行配置） |
+| 写入安全 | 关键文件原子写入（tmp+rename），防中断写坏 |
+| 长期记忆写入 | proposals 审阅制 — 自动提炼只生成候选，需人工确认 |
+| 数据目录 | 全部位于你的记忆根目录，不写系统任何位置 |
+
+**部署者须知**：引擎监听端口的对外暴露（如端口转发/防火墙）由部署者自己控制；引擎自身不会主动对外开任何端口。
+
 ---
 
 ## Docs · 参考文档

@@ -41,8 +41,8 @@ const ENGINE_PATH = path.resolve(__dirname, '..', 'engine.js');
 const platform = require('./platform');
 // 版本单一真相：优先读 engine 根目录 VERSION 文件
 const VERSION = (() => {
-  try { return require('fs').readFileSync(require('path').join(__dirname, '..', 'VERSION'), 'utf8').trim() || 'v6.2.0'; }
-  catch { return 'v6.2.0'; }
+  try { return require('fs').readFileSync(require('path').join(__dirname, '..', 'VERSION'), 'utf8').trim() || 'v6.4.0'; }
+  catch { return 'v6.4.0'; }
 })();
 
 // ============================================================

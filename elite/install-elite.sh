@@ -29,7 +29,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENGINE_DIR="$(dirname "$SCRIPT_DIR")"
 ELITE_DIR="$SCRIPT_DIR"
 VERSION="$(cat "$SCRIPT_DIR/../VERSION" 2>/dev/null | tr -d '[:space:]' || true)"
-[ -n "$VERSION" ] || VERSION="v6.2.0"
+[ -n "$VERSION" ] || VERSION="v6.4.0"
 
 # ---- 0. 参数解析 ----
 MEM_ROOT="${MNEMOSYNE_ROOT:-$HOME/.mnemosyne}"

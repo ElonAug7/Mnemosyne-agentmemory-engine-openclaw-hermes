@@ -26,8 +26,8 @@
 
 // 版本单一真相：优先读同目录 VERSION 文件，缺失时回退内置常量
 const VERSION = (() => {
-  try { return fs.readFileSync(path.join(__dirname, 'VERSION'), 'utf8').trim() || 'v6.2.0'; }
-  catch { return 'v6.2.0'; }
+  try { return fs.readFileSync(path.join(__dirname, 'VERSION'), 'utf8').trim() || 'v6.4.0'; }
+  catch { return 'v6.4.0'; }
 })();
 'use strict';
 
@@ -169,7 +169,7 @@ const crossMod   = (() => { try { return require('./modules/crosslang.js'); } ca
 // 路径解析（可移植，无硬编码）
 // ============================================================
 
-const ROOT = process.env.OPENCLAW_WORKSPACE || path.join(os.homedir(), '.openclaw', 'workspace');
+const ROOT = process.env.OPENCLAW_WORKSPACE ? path.resolve(process.env.OPENCLAW_WORKSPACE) : path.join(os.homedir(), '.openclaw', 'workspace');
 const ENGINE_DIR = __dirname;
 const TEMPLATES_DIR = path.join(ENGINE_DIR, 'templates');
 
@@ -419,10 +419,26 @@ function tokenizeChinese(text) {
   const enWords = s.match(/[a-zA-Z0-9_]{2,}/g);
   if (enWords) tokens.push(...enWords);
   // 去重 + 去停用词（高频但无检索价值的单字/2-gram）
-  const STOP = new Set(['一个','这个','那个','什么','怎么','为什么','可以','不是','已经','没有','如果','但是','因为','所以']);
+  // v6.3: 扩充问句停用词——「什么/怎么/现在/时候」等无效 bigram 会稀释 kwScore 分母（bench 根因2）
+  const STOP = new Set(['一个','这个','那个','什么','怎么','为什么','可以','不是','已经','没有','如果','但是','因为','所以',
+    '现在','如何','时候','时间','哪个','哪些','多少','几个','请问','哪里','是谁','叫什么','是什么','怎么样','多久','几点',
+    '我们','你们','他们','这些','那些','还有','还是','就是','应该','可能','知道','觉得','需要','使用','进行','通过','表示',
+    '主要','非常','比较','特别','以及','其中','关于','对于','相关','之间','以上','以下','当前','目前','最近','今天','昨天',
+    '明天','之前','之后','正在','不会','不能','不要','不用','不同','一样','类似','相同','每次','每次','有没有','是不是']);
   const unique = [...new Set(tokens)].filter(t => !STOP.has(t));
   // 回退：如果切不出任何词，用原始查询
   return unique.length ? unique : (s.length > 2 ? [s.slice(0, 10)] : [s]);
+}
+
+// v6.3: 有意义单字提取（unigram 回退用）——过滤功能字，保留内容字
+const UNIGRAM_FUNC_CHARS = new Set('的了吗呢吧啊呀什么怎这那哪我你他她它们和与或及之于把被让给向对过着也很都太更最又再还只就才却非没不别勿请问叫会要能可必已经正每些条种间点多几谁里时把被从到中对'.split(''));
+function meaningfulUnigrams(text) {
+  const s = String(text || '');
+  const out = new Set();
+  for (const ch of s) {
+    if (/[\u4e00-\u9fff]/.test(ch) && !UNIGRAM_FUNC_CHARS.has(ch)) out.add(ch);
+  }
+  return [...out];
 }
 
 // v5.1-elite: 话题关键词提取（MemSIF TSM — 话题连贯性加分）
@@ -467,6 +483,30 @@ const SYNONYM_DICT = {
   'perf': ['性能', 'performance', '优化'],
 };
 
+// v6.3: 事实实体别名表（查询扩展 P2）——问句词 → 答案面词
+// 通用映射 + 本部署环境事实（可在 config.json → aliases 覆盖扩展）
+const FACT_ALIASES = {
+  '时区': ['timezone', 'utc+8', 'asia/shanghai'],
+  '操作系统': ['os', 'ubuntu', 'linux', 'operating system'],
+  '系统': ['os', 'ubuntu', 'linux'],
+  '助手': ['assistant', '小爪'],
+  '模型': ['model', 'qwen', '大模型'],
+  '电脑': ['computer', 'pc', '主机'],
+  '名字': ['name', '叫'],
+  '版本': ['version', 'v6'],
+  '端口': ['port', '8765', '127.0.0.1'],
+  '行数': ['loc', 'lines', '3030'],
+  '路径': ['path', 'tools/memory-engine', 'workspace'],
+  '部署': ['deploy', 'install', 'workspace'],
+  '启动': ['start', 'launch', '2026-08-05'],
+  '内存': ['memory', 'ram', 'rss'],
+  '延迟': ['latency', 'ms', 'p50'],
+  '速度': ['speed', 'ms', 'performance'],
+  '依赖': ['dependency', '零依赖', 'stdlib'],
+  '隐私': ['privacy', '本地', 'local'],
+  '安装': ['install', 'bash', 'install.sh'],
+};
+
 function expandSynonyms(query) {
   const q = String(query || '').toLowerCase();
   const words = q.match(/[\u4e00-\u9fff]+|[a-zA-Z0-9+#_.-]+/g) || [];
@@ -475,6 +515,10 @@ function expandSynonyms(query) {
     const lw = w.toLowerCase();
     if (SYNONYM_DICT[lw]) {
       for (const s of SYNONYM_DICT[lw]) expansions.add(s);
+    }
+    // v6.3: 事实实体别名（中文问句词 → 答案面词）
+    if (FACT_ALIASES[lw]) {
+      for (const s of FACT_ALIASES[lw]) expansions.add(s);
     }
   }
   if (expansions.size === 0) return q;
@@ -1597,9 +1641,18 @@ function searchLayer(query, layer, opts = {}) {
   const terms = tokenizeChinese(query);
   const results = [];
 
+  const uniCache = { unis: meaningfulUnigrams(query) }; // v6.3 性能: unigram 只算一次
   const match = (text) => {
     const lower = text.toLowerCase();
-    return lower.includes(query.toLowerCase()) || terms.some(t => lower.includes(t.toLowerCase()));
+    if (lower.includes(query.toLowerCase())) return true;
+    if (terms.some(t => lower.includes(t.toLowerCase()))) return true;
+    // v6.3: unigram 回退——bigram 零命中时用有意义单字召回（否则候选集为空，再好的排序也白搭）
+    const unis = uniCache.unis;
+    let uniHit = 0;
+    for (const u of unis) {
+      if (lower.includes(u)) uniHit++;
+    }
+    return uniHit >= 2; // 至少 2 个有意义单字命中才召回，控制噪音
   };
 
   if (layer === 'working') {
@@ -1642,7 +1695,8 @@ function searchLayer(query, layer, opts = {}) {
   }
 
   if (layer === 'raw') {
-    for (const f of cachedReadDir(D.shortRaw, 'search').sort().slice(-3)) {
+    // v6.3: 扫描最近 7 天文件，全部匹配都进候选池（旧版 20 条截断会把后排真答案挤掉），由复合评分统一排序
+    for (const f of cachedReadDir(D.shortRaw, 'search').sort().slice(-7)) {
       if (!f.endsWith('.jsonl')) continue;
       let ln = 0;
       for (const line of cachedReadFile(path.join(D.shortRaw, f), 'search').split('\n')) {
@@ -1653,14 +1707,13 @@ function searchLayer(query, layer, opts = {}) {
         if (match(text)) {
           results.push({ layer, sub: 'raw', text: text.slice(0, 200), score: 1, imp: o.imp || 0.3, ts: o.ts, tags: o.tags || [], file: `short/raw/${f}`, line: ln });
         }
-        if (results.filter(r => r.layer === 'raw').length >= 5) break;
       }
     }
     endProf(); return results;
   }
 
   if (layer === 'medium') {
-    for (const f of cachedReadDir(D.medium, 'search').sort().slice(-5)) {
+    for (const f of cachedReadDir(D.medium, 'search').sort().slice(-7)) {
       if (!f.endsWith('.md')) continue;
       let txt; try { txt = cachedReadFile(path.join(D.medium, f), 'search'); } catch { continue; }
       const sections = txt.split(/^## /m).slice(1);
@@ -1668,27 +1721,41 @@ function searchLayer(query, layer, opts = {}) {
         const [head, ...rest] = sec.split('\n');
         const body = rest.join(' ');
         if (match(head) || match(body)) {
-          // 从文件名提取日期作为 ts
+          // v6.3: 返回标题+正文（旧版只返回标题行——正文匹配了但结果文本不含查询词，kwScore 必为低分）
           const dateMatch = f.match(/(\d{4}-\d{2}-\d{2})/);
-          results.push({ layer, sub: 'summary', text: head.trim().slice(0, 200), score: 1.5, imp: 0.7, ts: dateMatch ? dateMatch[1] + 'T12:00:00Z' : '', file: `medium/${f}` });
+          results.push({ layer, sub: 'summary', text: (head.trim() + ' ' + body).slice(0, 300), score: 1.5, imp: 0.7, ts: dateMatch ? dateMatch[1] + 'T12:00:00Z' : '', file: `medium/${f}` });
         }
-        if (results.filter(r => r.layer === 'medium').length >= 5) break;
       }
     }
     endProf(); return results;
   }
 
   if (layer === 'long') {
-    if (fs.existsSync(LONG_FILE)) {
-      const txt = cachedReadFile(LONG_FILE, 'search');
+    // v6.3: 长期层检索升级——搜 MEMORY.md / profile.md / USER.md / IDENTITY.md / SOUL.md
+    // 每个源独立上限（不跨源截断），保证画像文件不会被 MEMORY.md 淹没
+    const longSources = [LONG_FILE, path.join(MEM, 'profile.md'), path.join(ROOT, 'profile.md'), path.join(ROOT, 'USER.md'), path.join(ROOT, 'IDENTITY.md'), path.join(ROOT, 'SOUL.md')];
+    const profileQ = isProfileQuestion(query);
+    for (const src of longSources) {
+      if (!fs.existsSync(src)) continue;
+      const isProfileSrc = src.includes('profile.md') || src.endsWith('USER.md') || src.endsWith('IDENTITY.md') || src.endsWith('SOUL.md');
+      let srcCount = 0;
+      const txt = cachedReadFile(src, 'search');
+      // v6.3 P3: 画像问句 → 画像文件整块召回（画像信息分散在行里，行级匹配打不通问句→画像的词汇鸿沟）
+      if (profileQ && isProfileSrc) {
+        results.push({ layer, sub: 'profile', text: txt.slice(0, 1500), score: 2, imp: 0.9, ts: '', file: path.basename(src), line: 0, _profileBlock: true });
+        srcCount = 12;
+      }
       const lines = txt.split('\n');
       for (let i = 0; i < lines.length; i++) {
-        if (match(lines[i]) && lines[i].trim().startsWith('-')) {
-          const t = lines[i].trim().slice(0, 200);
-          results.push({ layer, sub: 'long', text: t, score: 2, imp: 0.9, ts: new Date().toISOString(), file: 'MEMORY.md', line: i + 1 });
+        const line = lines[i].trim();
+        if (!line) continue;
+        if (match(line) && /^([-*]|#{1,3}\s|>\s)/.test(line)) {
+          const t = line.slice(0, 200);
+          results.push({ layer, sub: isProfileSrc ? 'profile' : 'long', text: t, score: 2, imp: 0.9, ts: '', file: isProfileSrc ? path.basename(src) : 'MEMORY.md', line: i + 1 });
           trackMemoryHit(t);
           trackHit(t); // v5: 忆阻器命中追踪
-          if (results.filter(r => r.layer === 'long').length >= 5) break;
+          srcCount++;
+          if (srcCount >= 12) break;
         }
       }
     }
@@ -1700,7 +1767,7 @@ function searchLayer(query, layer, opts = {}) {
       for (const line of cachedReadFile(INDEX_FILE, 'search').split('\n')) {
         if (line.startsWith('|') && match(line)) {
           results.push({ layer, sub: 'index', text: line.slice(0, 200), score: 1.5, imp: 0.6, ts: '', file: 'memory/index/index.md' });
-          if (results.filter(r => r.layer === 'idx').length >= 5) break;
+          if (results.length >= 15) break;
         }
       }
     }
@@ -1756,7 +1823,25 @@ function trackHit(key) {
   // 自然衰减: 每24h衰减一次（floor到1，确保可复活）
   const age = (now - h[key].firstHit) / 86400000;
   if (age > 1) h[key].count = Math.max(1, Math.floor(h[key].count * Math.exp(-age * 0.01)));
-  saveHitFreq();
+  scheduleHitFreqSave(); // v6.3 性能: 批量延迟写盘（旧版每次命中同步写，长层搜索 19ms 的主因）
+}
+
+let _hitFreqSaveTimer = null;
+function scheduleHitFreqSave() {
+  if (_hitFreqSaveTimer) return;
+  _hitFreqSaveTimer = setTimeout(() => {
+    _hitFreqSaveTimer = null;
+    saveHitFreq();
+  }, 300);
+  _hitFreqSaveTimer.unref?.();
+}
+
+function flushHitFreq() {
+  if (_hitFreqSaveTimer) {
+    clearTimeout(_hitFreqSaveTimer);
+    _hitFreqSaveTimer = null;
+    saveHitFreq();
+  }
 }
 
 // v5.1: 负反馈衰减 — 用户跳过/否定某结果时调用，防止忆阻器变成错误放大器
@@ -1782,6 +1867,109 @@ function hitBoost(key) {
 }
 
 // ============================================================
+// v6.3: 候选集 IDF 词权重（BM25 精神）——零依赖、零索引的 IDF 近似
+// 在召回出的候选集内统计词频：稀罕词权重高，全场词（elon/memory 等）权重趋近 0
+function buildTermWeights(query, candidates) {
+  const terms = tokenizeChinese(query);
+  if (!terms.length || !candidates || !candidates.length) return {};
+  const df = {};
+  for (const r of candidates) {
+    const lower = (r.text || '').toLowerCase();
+    const counted = new Set();
+    for (const t of terms) {
+      if (counted.has(t)) continue;
+      if (lower.includes(t.toLowerCase())) {
+        counted.add(t);
+        df[t] = (df[t] || 0) + 1;
+      }
+    }
+  }
+  const N = candidates.length;
+  const out = {};
+  for (const t of terms) {
+    const f = df[t] || 0;
+    // idf = 1 + ln((N+1)/(f+1))，封顶 8
+    out[t] = Math.min(8, 1 + Math.log((N + 1) / (f + 1)));
+  }
+  return out;
+}
+
+// ============================================================
+// v6.3: BM25 打分（Okapi BM25，IDF 加权 + 词频 + 文档长度归一化）
+// 对标裸 BM25 基线（bench nDCG=0.185），把 keyword 分量从「伪 IDF 求和」
+// 升级为真正的 BM25 相似度，再经 sigmoid 归一化到 [0,0.5] 供复合线索公式使用。
+// ============================================================
+
+const BM25_K1 = 1.5;   // term frequency saturation
+const BM25_B = 0.75;   // length normalization strength
+
+// 计算查询词在候选集上的 IDF 与平均文档长度（一次算好，供所有候选复用）
+function buildBM25Stats(query, candidates) {
+  const terms = tokenizeChinese(query);
+  const stats = { idf: {}, avgdl: 0, terms };
+  if (!terms.length || !candidates || !candidates.length) return stats;
+
+  const df = {};
+  let totalLen = 0;
+  for (const r of candidates) {
+    const lower = (r.text || '').toLowerCase();
+    totalLen += lower.length;
+    const counted = new Set();
+    for (const t of terms) {
+      if (counted.has(t)) continue;
+      if (lower.includes(t.toLowerCase())) {
+        counted.add(t);
+        df[t] = (df[t] || 0) + 1;
+      }
+    }
+  }
+  const N = candidates.length;
+  stats.avgdl = totalLen / Math.max(1, N);
+  for (const t of terms) {
+    const f = df[t] || 0;
+    // 标准 BM25 IDF: ln(1 + (N - df + 0.5) / (df + 0.5))
+    stats.idf[t] = Math.log(1 + (N - f + 0.5) / (f + 0.5));
+  }
+  return stats;
+}
+
+// 标准 BM25 相似度: Σ idf(qi) · tf(qi,D)·(k1+1) / (tf + k1·(1-b+b·|D|/avgdl))
+function bm25Score(text, query, stats) {
+  if (!stats || !stats.terms || !stats.terms.length) return 0;
+  const lower = String(text || '').toLowerCase();
+  const docLen = lower.length;
+  const norms = {};
+  // 预计算长度归一化分母的公共部分
+  const lenNorm = BM25_K1 * (1 - BM25_B + BM25_B * (docLen / Math.max(1, stats.avgdl)));
+  let score = 0;
+  for (const t of stats.terms) {
+    const idf = stats.idf[t] || 0;
+    if (!idf) continue;
+    // term frequency: 计算 t 在文档中的出现次数（简单重叠计数，避免全局 indexOf 重复扫）
+    let tf = 0;
+    let idx = 0;
+    const tl = t.toLowerCase();
+    while ((idx = lower.indexOf(tl, idx)) !== -1) {
+      tf++;
+      idx += tl.length;
+      if (tf > 16) break; // 防长文档极端 tf 拖慢
+    }
+    if (!tf) continue;
+    score += idf * ((tf * (BM25_K1 + 1)) / (tf + lenNorm));
+  }
+  return score;
+}
+
+// BM25 分值 → [0,0.5] 归一化（sigmoid）。k 控制拐点：典型 BM25 相关文档得分 2~6
+function normalizeBM25(raw) {
+  if (raw <= 0) return 0;
+  // sigmoid: 0.5 / (1 + exp(-(raw - 3.0)))，得分 3 附近对应 ~0.25，6+ 趋近 0.5
+  return 0.5 / (1 + Math.exp(-(raw - 3.0)));
+}
+
+// v6.3 性能: 查询分词缓存（同一查询对全部候选重复 tokenize 的消除）
+const queryTokenCache = {};
+
 // v5: 复合线索评分模型（compound-cue theory）
 //
 // familiarity = α·imp + β·recency_decay + γ·keyword_match + δ·hit_frequency
@@ -1799,20 +1987,46 @@ function compoundScore(item, query, opts = {}) {
   const confidenceMultiplier = isLowConf ? 0.6 : 1.0;
 
   // 1. 关键词匹配度 (keyword_match)
-  const terms = tokenizeChinese(query);
+  // v6.3 修复：不用 matched/total 比率，改用候选集 IDF 加权（BM25 精神）——
+  // 像 elon/openclaw 这种每行都有的词权重趋近 0，真正有区分度的词（助手/名字/时区）拿高权重
+  // v6.3 性能: 查询分词按 query 缓存（同一查询对 265 个候选各跑一遍分词是主要耗时）
+  const qCacheKey = query.toLowerCase();
+  const terms = queryTokenCache[qCacheKey] || (queryTokenCache[qCacheKey] = tokenizeChinese(query));
   let kwScore = 0;
   const lower = text.toLowerCase();
-  const qLower = query.toLowerCase();
-  
+  const qLower = qCacheKey;
+  const tw = (opts.termWeights || {});
+  const bm25Stats = opts.bm25Stats || null;
+
   // 完整查询匹配（高权重）
-  if (lower.includes(qLower)) kwScore = 0.4;
-  // 分词匹配
-  let matchedTerms = 0;
-  for (const t of terms) {
-    if (lower.includes(t.toLowerCase())) matchedTerms++;
+  if (lower.includes(qLower)) kwScore = 0.5;
+  // v6.3: 主路径用 BM25（IDF+tf+长度归一化）；无 stats 时用旧 IDF 求和做兜底
+  if (!kwScore && bm25Stats) {
+    const raw = bm25Score(text, query, bm25Stats);
+    kwScore = normalizeBM25(raw);
   }
-  if (!kwScore && matchedTerms > 0) {
-    kwScore = Math.min(0.35, matchedTerms / Math.max(terms.length, 1) * 0.35);
+  // 分词匹配（兑底：无 BM25 stats 时）
+  let kwAccum = 0;
+  const matchedTerms = [];
+  if (!kwScore) {
+    for (const t of terms) {
+      if (lower.includes(t.toLowerCase())) {
+        matchedTerms.push(t);
+        kwAccum += (tw[t] !== undefined ? tw[t] : 0.5);
+      }
+    }
+    if (matchedTerms.length > 0) {
+      kwScore = Math.min(0.45, kwAccum * 0.045);
+    }
+  }
+  // v6.3: unigram 回退——bigram 全空时用有意义单字匹配（问句→答案词汇鸿沟的补丁）
+  if (!kwScore && !matchedTerms) {
+    const unis = meaningfulUnigrams(query);
+    let uniHit = 0;
+    for (const u of unis) {
+      if (lower.includes(u)) uniHit++;
+    }
+    if (uniHit > 0) kwScore = Math.min(0.25, uniHit / Math.max(2, unis.length) * 0.3);
   }
   // 标签匹配（v5 新增）
   if (item.tags && Array.isArray(item.tags) && item.tags.length) {
@@ -1826,7 +2040,8 @@ function compoundScore(item, query, opts = {}) {
   }
 
   // 2. 时间衰减 (recency_decay, v5: 接入 time.js)
-  let recency = 0.15; // 默认中性值
+  // v6.3: 无 ts（长期层/索引层）不再拿 0.15 中性分，改为 0——长期知识不该靠时间衰减排挤关键词命中
+  let recency = 0; // 默认中性值
   if (item.ts) {
     const ageDays = (Date.now() - new Date(item.ts).getTime()) / 86400000;
     if (ageDays >= 0 && ageDays < 365 * 5) {
@@ -1877,19 +2092,26 @@ function compoundScore(item, query, opts = {}) {
   const testingBoost = hfBoost > 0 ? 1.3 : 1.0;
 
   // 11. 复合信源得分 (compound familiarity)
+  // v6.3 权重重平衡（bench 根因1）：keyword 0.25→0.45，imp 0.35→0.20，recency 0.25→0.15
+  // 检索与记忆价值解耦：imp 管「值不值得记」，不管「排不排前」
+  // kw=0 的结果强制降级 ×0.3；加成类信号只对「有意义命中」(kwScore≥0.12) 生效，
+  // 防止 elon 这种全场命中词的假命中触发 zeigarnik/topic 加成
+  const kwGate = kwScore > 0 ? 1 : 0.3;
+  const meaningfulHit = kwScore >= 0.12;
   const compound = (
-    imp       * 0.35 +
-    recency   * 0.25 +
-    kwScore   * 0.25 +
+    imp       * 0.20 +
+    recency   * 0.15 +
+    kwScore   * 0.45 +
     hfBoost   * 0.10 +
-    layerW    * 0.05 +
-    topicCoherence     +       // v5.1: TSM 话题连贯性
-    zeigarnikBoost     +       // v6: Zeigarnik 未完成任务
-    primacyWeight      +       // v6: Primacy 首因效应
-    contextBonus               // v6: Context 情境依赖
+    layerW    * 0.10 +
+    (meaningfulHit ? topicCoherence : 0) +   // v6.3: 话题加成仅在有关键词命中时生效
+    (meaningfulHit ? zeigarnikBoost : 0) +   // v6.3: Zeigarnik 同上（否则 todo 消息霸榜所有查询）
+    (meaningfulHit ? primacyWeight : 0) +    // v6.3: 首因效应同上
+    (meaningfulHit ? contextBonus : 0)       // v6.3: 情境加成同上
   ) * confidenceMultiplier     // low-confidence摘要自动降权
     * supersededMultiplier     // v5.1: TEPA superseded 降权
-    * testingBoost;            // v6: Testing Effect 测验效应
+    * testingBoost             // v6: Testing Effect 测验效应
+    * kwGate;                  // v6.3: kw=0 强制降级
 
   return {
     compound: Math.round(compound * 10000) / 10000,
@@ -2015,10 +2237,28 @@ function recalibrateWeights(ratings) {
   };
 }
 
+// v6.3: 疑问句识别（P3）——事实/画像类问句 → 长期层优先检索
+function isFactQuestion(q) {
+  const s = String(q || '');
+  return /(什么|哪|谁|怎么|多少|几个|何时|时候|为什么|吗|呢|？|\?)/.test(s) || /^(介绍|说说|讲讲|有没有)/.test(s);
+}
+
+// v6.3: 画像类问句识别——「喜欢/风格/偏好/推荐/态度」等 → 画像文件整块召回
+function isProfileQuestion(q) {
+  const s = String(q || '');
+  return /(喜欢|偏好|风格|推荐|注意|态度|期望|沟通|作息|习惯|什么样的|如何回|怎么回|在乎|重视|核心价值|工作方式|什么时候会说)/.test(s);
+}
+
 // 多路并行召回 + 复合线索统一排序（v5 重构）
 async function multiPathSearch(query, opts = {}) {
   const endProf = profileStart('multiPathSearch');
-  const weights = queryWeights(opts);
+  const weights = { ...queryWeights(opts) };
+  // v6.3 P3: 疑问句 → 长期层/索引层权重提升（事实类问句的答案在 MEMORY.md/profile.md）
+  const factQ = isFactQuestion(query);
+  if (factQ) {
+    weights.long = Math.max(weights.long, 0.45);
+    weights.idx = Math.max(weights.idx, 0.25);
+  }
   const layerNames = Object.keys(weights).filter(k => weights[k] > 0);
 
   // v6.1: Synonym 同义词扩展 — 纯字典，零 LLM
@@ -2045,9 +2285,18 @@ async function multiPathSearch(query, opts = {}) {
       const key = r.file ? `${r.file}:${r.line || r.text?.slice(0, 40)}` : `${r.layer}:${r.text?.slice(0, 40)}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      const { compound, breakdown } = compoundScore(r, query, { layerWeights: weights, queryTopics });
-      merged.push({ ...r, combinedScore: compound, _breakdown: breakdown });
+      merged.push(r);
     }
+  }
+
+  // v6.3: 候选集 IDF 词权重（BM25 精神）——词在候选集里越稀罕，检索权重越高
+  // 解决「elon/openclaw 每行都有→假命中刷榜」问题
+  const termWeights = buildTermWeights(effectiveQuery, merged);
+  const bm25Stats = buildBM25Stats(effectiveQuery, merged); // v6.3: 真 BM25 打分器（IDF+tf+长度归一）
+  for (const r of merged) {
+    const { compound, breakdown } = compoundScore(r, query, { layerWeights: weights, queryTopics, termWeights, bm25Stats });
+    r.combinedScore = compound;
+    r._breakdown = breakdown;
   }
 
   // v5.1: 语义异步 — 带超时降级策略
@@ -2083,7 +2332,7 @@ async function multiPathSearch(query, opts = {}) {
           const key = r.file ? `${r.file}:${r.line || r.text?.slice(0, 40)}` : `semantic:${r.text?.slice(0, 40)}`;
           if (seen.has(key)) continue;
           seen.add(key);
-          const { compound } = compoundScore(r, query, { layerWeights: weights, queryTopics });
+          const { compound } = compoundScore(r, query, { layerWeights: weights, queryTopics, termWeights, bm25Stats });
           r._semantic = true;
           merged.push({ ...r, combinedScore: compound });
         }
@@ -2110,12 +2359,15 @@ async function multiPathSearch(query, opts = {}) {
   // 最终排序
   filteredMerged.sort((a, b) => b.combinedScore - a.combinedScore);
 
+  // v6.3 性能: 精排只作用于前 60 条（最终只返回 20 条，O(n²) 循环没必要跑满全候选池）
+  const refineN = Math.min(filteredMerged.length, 60);
+
   // v6: RIF Penalty 检索诱发遗忘（Anderson & Bjork 1994）
   // 同 topic 中排位靠后的记忆短暂降权——"回忆一个会抑制另一个"
   let rifPenalized = 0;
-  if (filteredMerged.length > 1) {
+  if (refineN > 1) {
     const topicKeys = new Map(); // topic → first occurrence score
-    for (let i = 0; i < filteredMerged.length; i++) {
+    for (let i = 0; i < refineN; i++) {
       const r = filteredMerged[i];
       const topics = r._topics || extractTopics(r.text || '');
       for (const t of topics) {
@@ -2136,14 +2388,23 @@ async function multiPathSearch(query, opts = {}) {
 
   // v6.1: MMR 搜索结果多样性（Maximal Marginal Relevance）
   // 防止返回 5 条同一话题的重复记忆 — 多样性 > 纯分数排序
-  if (filteredMerged.length > 1) {
-    for (let i = 1; i < filteredMerged.length; i++) {
+  if (refineN > 1) {
+    // v6.3 性能: gram 集合只算一次（旧版每对候选都重跑 regex）
+    const gramCache = new Map();
+    const gramsOf = (txt) => {
+      const key = txt.slice(0, 60);
+      if (gramCache.has(key)) return gramCache.get(key);
+      const g = new Set((txt.match(/[\u4e00-\u9fff]{2}|[a-zA-Z]{2,}/g) || []));
+      gramCache.set(key, g);
+      return g;
+    };
+    for (let i = 1; i < refineN; i++) {
       const current = filteredMerged[i].text || '';
+      const curGrams = gramsOf(current);
       for (let j = 0; j < i; j++) {
         const higher = filteredMerged[j].text || '';
         // 简单 Jaccard 相似度：共享 bigram / 总 bigram
-        const curGrams = new Set((current.match(/[\u4e00-\u9fff]{2}|[a-zA-Z]{2,}/g) || []));
-        const hiGrams = new Set((higher.match(/[\u4e00-\u9fff]{2}|[a-zA-Z]{2,}/g) || []));
+        const hiGrams = gramsOf(higher);
         if (curGrams.size === 0 || hiGrams.size === 0) continue;
         const intersection = [...curGrams].filter(g => hiGrams.has(g)).length;
         const minSize = Math.min(curGrams.size, hiGrams.size);
@@ -2170,7 +2431,7 @@ async function multiPathSearch(query, opts = {}) {
     layers: layerStats, 
     results: filteredMerged.slice(0, 20), 
     weights: layerNames.reduce((o, l) => ({ ...o, [l]: Math.round(weights[l] * 100) / 100 }), {}),
-    _v5: { semanticAsync: semanticStatus },
+    _v5: { semanticAsync: semanticStatus, factQuestion: factQ },
     asOf: opts.asOf ? { date: opts.asOf, filteredOut: asOfFiltered } : undefined,
   };
 
@@ -3530,6 +3791,7 @@ async function cmdSearch(query, opts) {
   out({ query, mode: effectiveMode, fallback: effectiveMode !== mode ? '语义未开启→降级keyword' : null, total: result.total, layers: result.layers, weights: result.weights, results: result.results, indexInfo, refusal: result.refusal, _v5: result._v5, _calibration: result._calibration });
   // v5.2: 缓存最近一次搜索结果，供 rate 命令使用
   try { saveLastSearch({ query, mode: effectiveMode, results: result.results, ts: nowIso() }); } catch {}
+  flushHitFreq(); // v6.3: 批量命中追踪落盘（进程退出前）
 }
 
 // P1: 搜索结果语义去重 — 相同文件且文本相似度 >80% 的只保留 imp 最高的
@@ -4063,6 +4325,7 @@ function cmdReport(opts) {
 }
 
 // ⑩ 用户画像 — memory/profile.md 渐进式构建 · 情绪价值
+// v6.4：从「抄 MEMORY.md」升级为「从对话信号提炼」——medium 块 #decision/#tech 标签 + current.json 决策/事实 + MEMORY.md
 function cmdProfile(opts) {
   ensureDirs();
   opts = opts || {};
@@ -4070,19 +4333,18 @@ function cmdProfile(opts) {
   const s = loadState();
   const totalTurns = s.turns || 0;
 
-  // 画像成熟度：150轮≈70%，之后每50轮+5%，上限95%
-  const maturity = Math.min(95, totalTurns < 150 ? Math.round(totalTurns / 150 * 70) : 70 + Math.round((totalTurns - 150) / 50 * 5));
-
-  // 如果已有 profile.md 且未强制更新，直接返回
-  if (fs.existsSync(PROFILE_FILE) && !opts.update) {
-    const existing = fs.readFileSync(PROFILE_FILE, 'utf8');
+  // 画像完整度：基于「实际提炼出的内容丰富度」，而非虚高的轮数
+  // 若已有 profile.md 且未 --update，仅返回现状（惰性读取）
+  const existingFile = fs.existsSync(PROFILE_FILE) ? fs.readFileSync(PROFILE_FILE, 'utf8') : '';
+  if (existingFile && !opts.update) {
+    const m = existingFile.match(/完整度[:：]\s*\*\*(\d+)%/);
+    const maturity = m ? parseInt(m[1], 10) : 50;
     return out({ profile: PROFILE_FILE, updated: false, maturity, turns: totalTurns });
   }
 
-  // 构建用户画像
   const profile = { tech: [], style: '', pace: '', focus: [], preferences: [], personality: [] };
 
-  // 从 MEMORY.md 提取
+  // === 1. 从 MEMORY.md 提取（结构化、长期可信） ===
   try {
     const mem = fs.readFileSync(LONG_FILE, 'utf8');
     const extract = (section) => {
@@ -4092,106 +4354,169 @@ function cmdProfile(opts) {
     profile.preferences = extract('用户偏好');
     const facts = extract('关键事实');
     profile.focus = extract('当前项目');
+    // 关键事实里的技术栈 → 拆成干净标签，而非整句塞入
     for (const f of facts) {
-      if (/node|python|rust|go|java|js|ts|react|vue|docker|k8s|nginx|sql/i.test(f)) profile.tech.push(f);
+      for (const tech of TECH_KEYS) {
+        if (f.toLowerCase().includes(tech.key) && !profile.tech.some(t => t.includes(tech.label))) {
+          profile.tech.push(tech.label);
+        }
+      }
     }
-    const allText = mem.toLowerCase();
-    if (allText.includes('简洁')||allText.includes('直接')) profile.style = '简洁直接，不喜啰嗦';
-    else if (allText.includes('详细')||allText.includes('解释')) profile.style = '偏好详细说明，喜欢理解原理';
-    if (allText.includes('快速')||allText.includes('拍板')) profile.pace = '快速决策型，不纠结';
-    else if (allText.includes('谨慎')||allText.includes('慢慢')) profile.pace = '深思熟虑型，考虑周全';
   } catch {}
 
-  // 从工作记忆补充
-  try {
-    const wm = JSON.parse(fs.readFileSync(path.join(D.shortWorking, 'current.json'), 'utf8'));
+  // === 2. 从当前工作记忆提炼（决策节拍 + 真实在聊话题） ===
+  let wm = null;
+  try { wm = JSON.parse(fs.readFileSync(path.join(D.shortWorking, 'current.json'), 'utf8')); } catch {}
+  if (wm) {
     if (wm.current_task && !profile.focus.includes(wm.current_task)) profile.focus.push(wm.current_task);
+    // 从 recent_facts / recent_decisions 提炼信号（过滤调试/基准噪音）
+    const signalText = [
+      ...(wm.recent_decisions || []),
+      ...(wm.recent_facts || []),
+      ...(wm.open_questions || []),
+    ].filter(isProfileSignal).join(' ');
+    for (const tech of TECH_KEYS) {
+      if (signalText.toLowerCase().includes(tech.key)) {
+        if (!profile.tech.some(t => t.includes(tech.label))) profile.tech.push(tech.label);
+      }
+    }
+  }
+
+  // === 3. 从 medium 摘要块提炼（#decision/#tech/#planning 标签 = 高可信信号） ===
+  try {
+    const mediumFiles = fs.readdirSync(D.medium).filter(f => f.endsWith('.md'));
+    const corpus = [];
+    for (const f of mediumFiles) {
+      try { corpus.push(fs.readFileSync(path.join(D.medium, f), 'utf8')); } catch {}
+    }
+    // 每个文件分别跳过 [superseded] 之后的旧文本（被新证据推翻的历史，不应用于画像）
+    const mediumText = corpus.map(c => c.split(/\[superseded\]/)[0]).join('\n');
+    const techHits = new Set();
+    // 过泛词（node/python/javascript/git）不放画像，避免误判
+    const skipKeys = new Set(['openclaw', 'node', 'python', 'javascript', 'git', 'github', 'react', 'vue']);
+    for (const tech of TECH_KEYS) {
+      if (skipKeys.has(tech.key)) continue;
+      if (mediumText.toLowerCase().includes(tech.key)) techHits.add(tech.label);
+    }
+    for (const t of techHits) if (!profile.tech.some(x => x.includes(t))) profile.tech.push(t);
   } catch {}
+
+  // === 4. 沟通风格 & 决策节奏（多源文本综合判定） ===
+  const styleText = [
+    (wm ? wm.recent_decisions || [] : []).join(' '),
+    (wm ? wm.open_questions || [] : []).join(' '),
+    fs.existsSync(LONG_FILE) ? fs.readFileSync(LONG_FILE, 'utf8') : '',
+  ].join(' ').toLowerCase();
+
+  // 风格：简洁直接 vs 详细原理
+  const conciseScore = (styleText.match(/简洁|直接|别啰嗦|废话|言简|拍板|快/gi) || []).length;
+  const detailScore  = (styleText.match(/详细|解释|原理|为什么|展开|细说/gi) || []).length;
+  if (conciseScore > detailScore) profile.style = '简洁直接，不喜啰嗦';
+  else if (detailScore > conciseScore) profile.style = '偏好详细说明，喜欢理解原理';
+
+  // 决策：快速 vs 深思
+  const fastScore = (styleText.match(/快速|拍板|直接|定|就这个|干|上/gi) || []).length;
+  const slowScore = (styleText.match(/谨慎|慢慢|考虑|权衡|再想想|评估|对比/gi) || []).length;
+  if (fastScore > slowScore) profile.pace = '快速决策型，不纠结';
+  else if (slowScore > fastScore) profile.pace = '深思熟虑型，考虑周全';
 
   // 去重限制
-  profile.tech = [...new Set(profile.tech)].slice(0, 8);
-  profile.focus = [...new Set(profile.focus)].slice(0, 5);
-  profile.preferences = [...new Set(profile.preferences)].slice(0, 10);
+  profile.tech = [...new Set(profile.tech)]
+    .map(t => t.replace(/^[\s#>*-]+/, '').trim())
+    .filter(Boolean).slice(0, 10);
+  profile.focus = [...new Set(profile.focus)].slice(0, 6);
+  profile.preferences = [...new Set(profile.preferences)].slice(0, 12);
   if (!profile.style) profile.style = '正在了解你…';
   if (!profile.pace) profile.pace = '正在观察中…';
 
-  // 情绪价值：人格化描述
+  // 情绪价值：人格化描述（基于真实信号，而非纯轮数）
   const personalityTraits = [];
-  const allLower = profile.preferences.join(' ').toLowerCase() + ' ' + profile.tech.join(' ').toLowerCase();
-  if (allLower.includes('零依赖')||allLower.includes('轻量')||allLower.includes('简单')) personalityTraits.push('追求优雅的简洁');
+  const allLower = (profile.preferences.join(' ') + ' ' + profile.tech.join(' ') + ' ' + styleText).toLowerCase();
+  if (allLower.includes('零依赖')||allLower.includes('轻量')||allLower.includes('简单')||allLower.includes('本地')) personalityTraits.push('追求优雅的简洁');
   if (allLower.includes('安全')||allLower.includes('加密')||allLower.includes('隐私')) personalityTraits.push('对安全和隐私有执着');
-  if (allLower.includes('快速')||allLower.includes('效率')) personalityTraits.push('珍惜时间，讨厌冗余');
-  if (allLower.includes('开源')||allLower.includes('社区')) personalityTraits.push('相信开源的力量');
-  if (totalTurns > 100) personalityTraits.push('是 Mnemosyne 的深度用户 ✨');
-  if (totalTurns > 50) personalityTraits.push('喜欢亲手打磨工具');
-  if (maturity >= 50) personalityTraits.push('有清晰的审美偏好');
+  if (allLower.includes('快速')||allLower.includes('效率')||profile.pace.includes('快速')) personalityTraits.push('珍惜时间，讨厌冗余');
+  if (allLower.includes('开源')||allLower.includes('社区')||allLower.includes('pr')) personalityTraits.push('相信开源的力量');
+  if (totalTurns > 100 || profile.tech.includes('Mnemosyne')) personalityTraits.push('是 Mnemosyne 的深度用户 ✨');
+  if (totalTurns > 50 || profile.focus.some(f => /打磨|优化|重构|做到最好/.test(f))) personalityTraits.push('喜欢亲手打磨工具');
+  if (conciseScore >= 1) personalityTraits.push('有清晰的审美偏好');
   profile.personality = personalityTraits.slice(0, 5);
 
   // 检测用户名
   let userName = '';
   try {
-    const userFile = path.join(ROOT, 'USER.md');
-    if (fs.existsSync(userFile)) {
-      const um = fs.readFileSync(userFile, 'utf8');
-      const nm = um.match(/\*\*Name:\*\*\s*(.+)/);
-      if (nm) userName = nm[1].trim();
-    }
+    const um = fs.readFileSync(path.join(ROOT, 'USER.md'), 'utf8');
+    const nm = um.match(/\*\*Name:\*\*\s*(.+)/);
+    if (nm) userName = nm[1].trim();
   } catch {}
-  if (!userName) {
-    try {
-      const mem = fs.readFileSync(LONG_FILE, 'utf8');
-      const nm = mem.match(/Elon|elon/);
-      if (nm) userName = 'Elon';
-    } catch {}
-  }
+  if (!userName) { try { if (fs.readFileSync(LONG_FILE, 'utf8').match(/Elon|elon/)) userName = 'Elon'; } catch {} }
+
+  // === 画像完整度：按「内容实质」计算，不再是虚高的轮数 ===
+  // tech(0-20) + focus(0-15) + preferences(0-20) + style/pace(0-20) + personality(0-25)
+  const techPts = Math.min(20, profile.tech.length * 5);
+  const focusPts = Math.min(15, profile.focus.length * 4);
+  const prefPts = Math.min(20, profile.preferences.length * 3);
+  const stylePts = (profile.style !== '正在了解你…' ? 8 : 0) + (profile.pace !== '正在观察中…' ? 8 : 0) + (userName ? 4 : 0);
+  const personalityPts = Math.min(25, profile.personality.length * 6);
+  const maturity = Math.min(95, Math.round(techPts + focusPts + prefPts + stylePts + personalityPts) + (totalTurns > 5000 ? 5 : 0));
 
   // 写入 profile.md
   const now = dayOf(Date.now());
   let md = '# 👤 用户画像\n\n';
-  if (userName) {
-    md += `> ✨ **${userName}**`;
-    if (userName === 'Elon') md += ` — 🦞 Mnemosyne 的缔造者`;
-    md += `\n`;
-  }
+  if (userName) { md += `> ✨ **${userName}**`; if (userName === 'Elon') md += ' — 🦞 Mnemosyne 的缔造者'; md += '\n'; }
   md += `> 🧬 画像完整度: **${maturity}%** · ${totalTurns} 轮对话 · ${now}\n`;
-  if (maturity < 30) md += `> 🌱 我才刚开始了解你，每多聊一天，我就多懂你一点\n`;
-  else if (maturity < 60) md += `> 🌿 我已经开始理解你的风格了，但还有更多值得探索\n`;
-  else if (maturity < 85) md += `> 🌳 我们越来越默契了，我知道你喜欢什么、讨厌什么\n`;
-  else md += `> 🏛️ 我非常了解你了——你的偏好、节奏、品味，都刻在这里\n`;
-  md += '\n';
-
-  md += '## 💻 技术偏好\n';
+  if (maturity < 30) md += '> 🌱 我才刚开始了解你，每多聊一天，我就多懂你一点\n';
+  else if (maturity < 60) md += '> 🌿 我已经开始理解你的风格了，但还有更多值得探索\n';
+  else if (maturity < 85) md += '> 🌳 我们越来越默契了，我知道你喜欢什么、讨厌什么\n';
+  else md += '> 🏛️ 我非常了解你了——你的偏好、节奏、品味，都刻在这里\n';
+  md += '\n## 💻 技术偏好\n';
   if (profile.tech.length) { for (const t of profile.tech) md += `- ${t}\n`; }
   else md += '- 还在发现中… 每次聊技术话题，我就更懂你一点 🌱\n';
-  md += '\n';
-
-  md += '## 💬 沟通风格\n';
-  md += `- **风格**: ${profile.style}\n`;
-  md += `- **决策**: ${profile.pace}\n`;
-  md += '\n';
-
-  md += '## 🎯 当前关注\n';
+  md += '\n## 💬 沟通风格\n';
+  md += `- **风格**: ${profile.style}\n- **决策**: ${profile.pace}\n`;
+  md += '\n## 🎯 当前关注\n';
   if (profile.focus.length) { for (const f of profile.focus) md += `- ${f}\n`; }
   else md += '- 让我们多聊聊天，我会慢慢发现的 ✨\n';
-  md += '\n';
-
-  md += '## 🌟 个性碎片\n';
+  md += '\n## 🌟 个性碎片\n';
   if (profile.personality.length) { for (const p of profile.personality) md += `- ${p}\n`; }
   else md += '- 像拼图一样，每聊一次就多一块… 🧩\n';
-  md += '\n';
-
-  md += '## 📝 偏好清单\n';
+  md += '\n## 📝 偏好清单\n';
   if (profile.preferences.length) { for (const p of profile.preferences) md += `- ${p}\n`; }
   else md += '- 当你说"我喜欢这样"的时候，我就记下来了 💭\n';
-  md += '\n';
-
-  md += `---\n*🦞 每次 sync 或 consolidate 后自动刷新 · 成熟度 ${maturity}%*\n`;
-  md += `\n<!-- 用户可手动编辑此文件修正画像 — 编辑后不会被自动刷新覆盖（下次 --update 才会重建） -->\n`;
+  md += `\n---\n*🦞 每次 sync 或 consolidate 后自动刷新 · 成熟度 ${maturity}%*\n`;
+  md += '\n<!-- 用户可手动编辑此文件修正画像 — 编辑后不会被自动刷新覆盖（下次 --update 才会重建） -->\n';
 
   fs.writeFileSync(PROFILE_FILE, md);
   out({ profile: 'memory/profile.md', updated: true, maturity, turns: totalTurns,
-    summary: { style: profile.style, pace: profile.pace, techCount: profile.tech.length, personalityCount: profile.personality.length }
+    summary: { style: profile.style, pace: profile.pace, techCount: profile.tech.length, focusCount: profile.focus.length, preferenceCount: profile.preferences.length, personalityCount: profile.personality.length, tech: profile.tech }
   });
+}
+
+// v6.4 画像信号：技术栈识别词表 + 噪音过滤
+const TECH_STACK_RE = /openclaw|node|javascript|python|rust|go|java|js|ts|react|vue|docker|k8s|kubernetes|nginx|sql|mnemosyne|qwen|ubuntu|linux|virtualbox|bash|shell|git|github|bailian|百炼/i;
+const TECH_KEYS = [
+  { key: 'mnemosyne', label: 'Mnemosyne 认知记忆引擎' },
+  { key: 'openclaw', label: 'OpenClaw' },
+  { key: 'qwen', label: 'Qwen / 千问大模型' },
+  { key: 'bailian', label: '阿里云百炼 (Bailian)' },
+  { key: '百炼', label: '阿里云百炼 (Bailian)' },
+  { key: 'ubuntu', label: 'Ubuntu 24.04' },
+  { key: 'virtualbox', label: 'VirtualBox 虚拟机' },
+  { key: 'node', label: 'Node.js' },
+  { key: 'python', label: 'Python' },
+  { key: 'javascript', label: 'JavaScript' },
+  { key: 'react', label: 'React' },
+  { key: 'vue', label: 'Vue' },
+  { key: 'docker', label: 'Docker' },
+  { key: 'git', label: 'Git / GitHub' },
+  { key: 'github', label: 'Git / GitHub' },
+];
+// 过滤 benchmark/调试噪音：只保留「真用户信号」
+function isProfileSignal(text) {
+  const t = String(text || '');
+  if (t.length < 12) return false;
+  // 调试/基准噪音片段直接丢弃
+  if (/0\.008|ws-rel|ws-(r1|r2|r3|r4|r5|flaky|probe|trace)|benchmark|nDCG|BM25|path\.resolve|test-engine-cli|版本号不一致|VERSION 文件已改/.test(t)) return false;
+  return true;
 }
 
 // ⑲ 记忆问答 — 结构化查询

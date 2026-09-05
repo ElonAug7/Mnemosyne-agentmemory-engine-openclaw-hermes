@@ -57,14 +57,14 @@ Whether you're deploying on a Windows workstation, a Linux server, or a macOS la
 
 ```bash
 git clone https://github.com/ElonAug7/Mnemosyne-agentmemory-engine-openclaw-hermes
-cd Mnemosyne-agentmemory-engine-openclaw-hermes/Mnemosyne-v6.4
+cd Mnemosyne-agentmemory-engine-openclaw-hermes/Mnemosyne-v6.5
 bash install.sh
 open http://localhost:8765
 ```
 
-## 🚀 Latest: v6.4 — Beats every embedding system, without a single embedding
+## 🚀 Latest: v6.5 — Local dictionary semantics, zero LLM, zero embedding API
 
-On our Memory-Native Evaluation benchmark (80 queries, 11 systems including Mem0, LlamaIndex, qwen-agent, Google ADK):
+Still beats every embedding system on our Memory-Native Evaluation benchmark (80 queries, 11 systems including Mem0, LlamaIndex, qwen-agent, Google ADK):
 
 | System | nDCG@10 |
 |---|---|
@@ -73,14 +73,16 @@ On our Memory-Native Evaluation benchmark (80 queries, 11 systems including Mem0
 | embedding systems (Mem0 / LlamaIndex / ...) | 0.12–0.16 |
 | **Mnemosyne v6.3+** | **0.238** — 5.2× over v6.2, beats everything, pure local keywords |
 
-Search latency: **~7ms** (keyword mode, measured on real data). Target: always < 50ms.
+Search latency: **~10–40ms** (keyword mode, measured on real data). Target: always < 50ms.
 
-**What's new in v6.4**
-- User profile reconstruction — multi-source distillation (decisions, tagged summaries, structured facts) instead of copying files
-- True BM25 ranking (v6.3) + weight rebalance: retrieval is decoupled from memory importance
+**What's new in v6.5**
+- **Local semantic dictionary** (`data/semantic-dict.json`) — 800+ synonym entries + 20 concept groups, pure dictionary, no LLM, no embedding API. Extend it like a config file.
+- **Recall pipeline fixed**: hybrid mode now actually runs (was silently falling back to keyword), medium/long layers are guaranteed a seat in results
+- **Vector store in binary** (`embeddings.bin`): index JSON shrank 13MB → 938KB, zero-parse loading
+- Semantic search ~6× faster (per-item vector recomputation removed)
 - 8/8 test suite passing · zero-dependency · zero API keys
 
-Full details in `CHANGELOG.md` · install: `cd Mnemosyne-v6.4 && bash install.sh`
+Full details in `CHANGELOG.md` · install: `cd Mnemosyne-v6.5 && bash install.sh`
 
 ## 📊 How It Compares（full documents are in the /docs file）
 

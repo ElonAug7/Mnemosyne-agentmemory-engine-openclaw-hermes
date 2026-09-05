@@ -2,65 +2,91 @@
 
 All notable changes to Mnemosyne.
 
-## [v6.5.0] — Local Dictionary Semantics + Recall Pipeline Fixes (2026-09-05)
+## [v6.4.0] — 画像抽取重构 + 工作区瘦身（2026-08-22）
 
-### Fixed
-- `cmdRecall`/hook recall argument bug: `multiPathSearch(query, 'hybrid')` passed a string as opts → silently ran keyword mode; now `{mode:'hybrid'}`
-- Recall layer truncation: top-20 pool was dominated by high-imp raw hits, medium/long layers never surfaced → new `layerTopK` guaranteed recall
-- `semanticSearch` performance bug: dimension-mismatch branch recomputed `localEmbed` per item (3127 items → 600ms+); now uses stored vectors directly (~6× faster)
-- Semantic merge timeout 200ms → 80ms (keyword path stays <50ms; semantics merge when fast, never block)
-- Version constants drifted (v6.4.0 leftovers in engine.js / elite bridge / install script)
+### A. profile 画像抽取重构（cmdProfile）
+- **根因**：旧版 profile.md 只是「从 MEMORY.md 二次复制」，memory-native 基准里画像推断命中率 0%（四类查询里唯一全灭），且 techCount=0、决策风格抽不到
+- **升级为多源真实信号提炼**：
+  - medium 摘要块（#decision/#tech/#planning 标签，逐文件跳过 [superseded] 旧文本）
+  - current.json 的 recent_decisions/recent_facts/open_questions（经 isProfileSignal 噪音过滤）
+  - MEMORY.md 结构化段（关键事实 → 拆成干净技术标签，而非整句塞入）
+- **技术栈识别**：TECH_KEYS 词表（OpenClaw/Qwen/百炼/Ubuntu/VirtualBox/Mnemosyne 等），过泛词（node/python/js/react/vue/git）不放画像避免误判
+- **决策风格/沟通风格**：conciseScore vs detailScore、fastScore vs slowScore 多源计数判定，修正旧版窄关键词漏配
+- **画像完整度诚实化**：从「轮数虚高」（5171 轮→95%）改为「内容实质计分」（tech+focus+pref+style+personality），修复成熟度与内容脱节
+- **Bug 修复**：`${maturity}` 插值失效（普通字符串而非模板字面量）、React/Vue 误判（扫到 [superseded] 历史）
+
+### B. 工作区瘦身（删冗余）
+- 删除 11 个 benchmark 临时工作区 `ws-r1~r5/ws-flaky/ws-probe/ws-trace4/5/ws-rel/ws-final2`（~900KB，纯残留）
+- 删除 `__pycache__` + `elite/plugins/.../__pycache__`（Python 缓存）
+- 回收区：`/tmp/.mnemosyne-recycle-20260822`（可恢复，未直接 rm）
+- **保留**：`elite/`（Hermes 适配层，README 活跃交付章节）、`bge-daemon.py`（未接入主路径的本地语义层，待拍板）
+
+### 版本
+- VERSION → v6.4.0（同步 engine.js / hermes-bridge.js / install-elite.sh 回退常量）
+- 测试套件 8/8 通过，搜索延迟 7.27ms < 50ms 硬指标
+
+## [v6.3.0] — 检索本质重构（BM25 + 延迟回归修复）(2026-08-16)
+
+### 背景
+基于 `/media/sf_openclaw/mnemosyne-v62-bench-结果` 的 Memory-Native Evaluation 基准：v6.2 排名 9/11（nDCG@10=0.046），被裸 BM25（0.185）和多个嵌入系统碾压。根因：检索排序被 imp/recency 绑架（占 0.60 权重）、中文问句 bigram 词汇鸿沟、画像/事实问句全军覆没。
+
+### Changed — 检索打分
+- **真 BM25 打分**（`buildBM25Stats` + `bm25Score` + `normalizeBM25`）：把 keyword 分量从「伪 IDF 求和（Σidf×0.045）」升级为 Okapi BM25（IDF + term-frequency + 文档长度归一化，k1=1.5/b=0.75），经 sigmoid 归一化到 [0,0.5] 供复合线索公式使用
+- **权重重平衡**：kwScore 0.25→0.45，imp 0.35→0.20，recency 0.25→0.15，检索与记忆价值解耦（imp 管「值不值得记」，不管「排不排前」）
+- **kw=0 强制降级 ×0.3** + meaningfulHit 门馈（kwScore≥0.12）——防「elon/openclaw」全场命中词的假命中触发加成类信号
+- **unigram 回退**：bigram 零命中时用有意义单字召回（UNIGRAM_FUNC_CHARS 过滤功能字），至少 2 字命中才召回
+- **长期层无 ts 不再拿时间中性分**：长期知识不该靠时间衰减排挤关键词命中
+
+### Changed — 性能（修复 P50 从 57ms 回归到 248ms）
+- MMR/RIF 精排只作用于前 60 条（O(n²) 循环没必要跑满全候选池）
+- MMR gram 集合只算一次（旧版每对候选都重跑 regex）
+- `meaningfulUnigrams` / 查询分词按 query 缓存（queryTokenCache）
+- `trackHit` 同步写盘 → `scheduleHitFreqSave` 批量延迟写（300ms debounce + flush），长层搜索 19ms 主因消除
 
 ### Added
-- Local semantic dictionary `data/semantic-dict.json` — 800+ synonym entries, 20 concept groups (performance/bugfix/debug/timers...), CN↔EN mappings; merged into query expansion at startup. Pure dictionary: no LLM, no embedding API, editable like config
-- Automatic local semantic index bootstrap on recall/hook when empty (512-dim character n-gram vectors, fully offline)
-- Binary vector column store `embeddings.bin` — zero-parse loading; index JSON 13MB → 938KB (metadata only)
+- `bge-daemon.py`：本地中文语义 Embedding Daemon（bge-small-zh-v1.5 ONNX int8 量化，24MB，纯本地零网络，stdin/stdout JSONL 协议）——为 P0 语义层预留
 
-### Notes
-- Full test suite 8/8 passing · latency keyword ~10-40ms < 50ms target
+### 基准结果（本地复现 harness，80 查询）
+- 官方 v6.2：nDCG@10=0.046 / Hit=0.075
+- 裸 BM25 基线：nDCG=0.185
+- **v6.3（P1+P2+P3+BM25）**：nDCG@10=**0.238** / MRR=0.199 / Hit@10=0.388 / F1=0.112 / P50=62ms
+- 相较 v6.2 提升 **5.2×**（nDCG），已反超裸 BM25 基线（+29%）和所有嵌入系统
 
-## [v6.4.0] — User Profile Reconstruction (2026-08-22)
+## [v6.2.0] — 加固版 (2026-08-15)
 
-### Changed
-- **Profile extraction rewrite** (`cmdProfile`): upgraded from "copy MEMORY.md" to multi-source distillation
-  - Medium summary blocks (`#decision`/`#tech`/`#planning` tags, skips `[superseded]` stale text)
-  - Working-memory decisions/facts with benchmark-debug noise filtering
-  - MEMORY.md structured sections → clean tech-stack tags (no raw sentence dumps)
-- **Tech-stack detection**: curated keyword table (OpenClaw/Qwen/Bailian/Ubuntu/VirtualBox/Mnemosyne...); over-generic terms (node/python/js/react/vue) excluded to avoid false positives
-- **Style/pace inference**: multi-source score-based (concise vs detail, fast vs deliberate) instead of narrow keyword matching
-- **Honest maturity**: content-based scoring (tech+focus+pref+style+personality) replaces inflated turn-count percentage
+### Fixed（种子用户反馈 + 自测发现，共 10 项）
+- ui.js 环境变量：统一为 MNEMOSYNE_ROOT → HERMES_WORKSPACE → OPENCLAW_WORKSPACE → ~/.mnemosyne，且调引擎时注入 OPENCLAW_WORKSPACE（Hermes 环境 UI 空白 + 数据错位的根因）
+- install-elite.sh：补 Windows 检测目录（LOCALAPPDATA/hermes/{skills,plugins}）
+- install-elite.sh：set -u 安全（SKILL_DEST/PLUGIN_DEST 初始化 + LOCALAPPDATA/APPDATA ${VAR:-} 兑底）
+- engine.js：distill-reject 假命令（HELP 有但 dispatch 无）→ 实现 cmdDistillReject
+- engine.js：cmdCleanup 未定义 dirsToCheck 导致 cleanup --confirm 崩溃 → 定义 11 目录
+- hermes-bridge.js：空记忆注入「（无相关记忆）」噪声 → 返回空串
+- 版本号三处不一致（engine v6.1.0 / bridge v6.0.0 / install v6.0.0）→ VERSION 文件单一真相
+- 插件适配层 prefetch 空记忆噪声
+- MEMORY.md / CHANGELOG 版本记录滞后
 
-### Fixed
-- `${maturity}` interpolation bug (plain string instead of template literal)
-- React/Vue false positives from scanning `[superseded]` history
-
-### Removed
-- 11 leftover benchmark workspaces (`ws-*`) + Python cache dirs (~900KB reclaimed)
-
-## [v6.3.0] — Retrieval Core Reconstruction (2026-08-16)
-
-### Changed
-- **True BM25 scoring** (Okapi BM25: IDF + term-frequency + length normalization, k1=1.5/b=0.75), sigmoid-normalized into the compound-cue formula
-- **Weight rebalance**: keyword 0.25→0.45, imp 0.35→0.20, recency 0.25→0.15 — retrieval decoupled from memory value
-- **kw=0 forced demotion** (×0.3) + meaningful-hit gating; unigram fallback when bigram hits are zero
-- **Performance fixes**: MMR/RIF rerank limited to top-60, gram sets cached, query tokenization cache, hit-frequency batched writes (300ms debounce) — P50 back from 248ms to 62ms
-
-### Benchmark (Memory-Native Evaluation, 80 queries)
-| System | nDCG@10 |
-|---|---|
-| v6.2 | 0.046 |
-| raw BM25 baseline | 0.185 |
-| **v6.3** | **0.238** (+5.2× vs v6.2, beats raw BM25 and all embedding systems) |
-
-## [v6.2.0] — Hardening (2026-08-15)
-- Test suite (8 scripts), single-source-of-truth VERSION file
-- Hermes native plugin adapter layer; `install-elite.sh --hermes-plugin`
-- Medium-block dedupe (106 duplicate blocks → 0)
-- Fixed 10+ bugs incl. ui.js env handling, install `set -u`, cleanup crashes
+### Added
+- **Hermes 原生插件适配层**（elite/plugins/hermes-mnemosyne/）：MemoryProvider ABC 6 核心方法 + 4 hook，纯 Python 标准库，零依赖
+- install-elite.sh `--hermes-plugin` / `--plugin-dir` 插件安装模式
+- **测试套件**（tests/）：引擎 CLI / cleanup / distill / 安装流程 / UI 双环境 / Hermes 模拟集成 / 去重与噪音，run-all.sh 一键跑
+- `medium-dedupe [--confirm]` 命令：2-gram 相似度压缩 medium 重复摘要块（相邻相似度≥0.7 时新块替换旧块）
+- consolidate 写入时相邻块去重防护（根治 08-11 式同一窗口重复摘要）
+- 待办噪音过滤升级：拦截 markdown 表格行/标题行，移除误伤合法待办的右括号规则
+- **假命令大扫除**：HELP 文档化的 19 个命令中 backup/backup-log 实际未实现（health 还推荐用户跑它）→ 已实现（git init+commit）；其余 17 个纯虚构命令（version/version-diff/version-history/conflict/restore/save/export/timeline/time-travel/sessions/permission/config/devlog/ask/stale/imp-calibrate/reindex-all）已从 HELP 删除，文档与实现完全对齐
 
 ## [v6.1.0] — Cognitive Effects Pack (2026-08-11)
-- Scoring additions: primacy effect, RIF penalty (Anderson & Bjork 1994), testing boost (Roediger & Karpicke 2006), Zeigarnik todo signal, context bonus, confidence multiplier
-- Retro-terminal Web UI; Windows MSYS/MinGW + Hermes third-party adapter verification
+
+### 论文筛选报告先行（v6-plan.md）
+- 筛掉与路线冲突的 5 篇：Memory Networks、Neural Turing Machine、PMMC、OpsMem、SuperLocalMemory 4.0
+- 确认 14 篇已对齐理论（Ebbinghaus → Provenance Laundering）
+
+### Added
+- **首因效应 Primacy**：>30 天且 high-imp 的记忆搜索排序 +0.03
+- **检索诱发遗忘 RIF**（Anderson & Bjork 1994）：同次搜索中同 topic 低分项 ×0.7
+- **测验效应 Testing Boost**（Roediger & Karpicke 2006）：recall 命中临时强化
+- **Zeigarnik 待办信号**：含待办线索的记忆加权
+- **contextBonus / confidenceMultiplier**：上下文加成与低置信度降权
+- UI「v6.1 复古终端控制盘」+ Windows MSYS/MinGW + Hermes 第三方适配验证数据
 
 ## [v5.0.0] — Compound-Cue Core (2026-08-09)
 
@@ -231,3 +257,16 @@ All notable changes to Mnemosyne.
 - **Gateway Hook**: auto-records all messages with imp scoring
 - **Portable install**: Linux systemd + macOS launchd, zero hardcoded paths
 - Named **Mnemosyne** — after the Greek goddess of memory, mother of the Muses
+
+## [v6.5.0] — 本地语义词典 + 检索修复 (2026-09-05)
+
+### Fixed
+- cmdRecall/hook recall 传参 bug：`multiPathSearch(query, 'hybrid')` 字符串当 opts → 实际跑 keyword；改 `{mode:'hybrid'}`
+- recall 层截断 bug：结果只取前 20（raw 高 imp 刷榜）→ medium/long 永远被挤出 → 新增 layerTopK 保底召回
+- semanticSearch 性能 bug：维度不匹配分支对每个 item 重算 `localEmbed(item.text)`（3127 次 → 600ms+）；改直接用 item.vec
+- 语义等待上限 200ms → 80ms（keyword 首出 ~20ms 达标，语义快则合并慢不阻塞）
+
+### Added
+- 本地语义词典 `data/semantic-dict.json`（纯本地零 LLM 零 embedding API）：800+ 同义词条 + 概念组（性能优化/bug修复/真机调试/定时任务等 20 组）+ 中英映射；engine.js 启动合并进 SYNONYM_DICT + 概念组扩展（expandSynonyms）
+- 语义索引自动构建：recall/hook 路径空索引时自动 embed（纯本地 512 维字向量）
+- 向量二进制列存：embeddings.bin（float64 顺序写，加载零解析）；embeddings.json 13MB → 938KB（仅元数据）

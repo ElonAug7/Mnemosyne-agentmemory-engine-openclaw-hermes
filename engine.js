@@ -26,8 +26,8 @@
 
 // 版本单一真相：优先读同目录 VERSION 文件，缺失时回退内置常量
 const VERSION = (() => {
-  try { return fs.readFileSync(path.join(__dirname, 'VERSION'), 'utf8').trim() || 'v6.4.0'; }
-  catch { return 'v6.4.0'; }
+  try { return fs.readFileSync(path.join(__dirname, 'VERSION'), 'utf8').trim() || 'v6.5.0'; }
+  catch { return 'v6.5.0'; }
 })();
 'use strict';
 
@@ -197,6 +197,7 @@ const LONG_LINK   = path.join(D.long, 'MEMORY.md');
 const PROTO_FILE  = path.join(ROOT, 'MEMORY-PROTOCOL.md');
 const OFFSETS_FILE = path.join(D.engine, 'transcript-offsets.json');
 const VECTORS_FILE = path.join(D.engine, 'embeddings.json');
+const VECTORS_BIN = path.join(D.engine, 'embeddings.bin'); // v6.5: 向量二进制列存（JSON 12MB parse 60ms+ → bin 零解析）
 const TODOS_FILE  = path.join(D.engine, 'todos.json');
 const TODOS_MD    = path.join(MEM, 'todos.md');
 const CONFIG_FILE = path.join(D.engine, 'config.json');
@@ -507,6 +508,41 @@ const FACT_ALIASES = {
   '安装': ['install', 'bash', 'install.sh'],
 };
 
+// v6.5: 外部语义词典（data/semantic-dict.json，可自由扩展）——纯本地零 LLM
+// 结构: { synonyms: {词:[近义词]}, concepts: {概念:[相关词]}, lang: {词:[对应词]} }
+function loadExternalDict() {
+  try {
+    const p = path.join(__dirname, 'data', 'semantic-dict.json');
+    if (!fs.existsSync(p)) return null;
+    return JSON.parse(fs.readFileSync(p, 'utf8'));
+  } catch { return null; }
+}
+const EXT_DICT = loadExternalDict();
+if (EXT_DICT) {
+  try {
+    if (EXT_DICT.synonyms) {
+      for (const [k, v] of Object.entries(EXT_DICT.synonyms)) {
+        if (!SYNONYM_DICT[k]) SYNONYM_DICT[k] = v;
+        else SYNONYM_DICT[k].push(...v.filter(x => !SYNONYM_DICT[k].includes(x)));
+      }
+    }
+    if (EXT_DICT.lang) {
+      for (const [k, v] of Object.entries(EXT_DICT.lang)) {
+        if (!SYNONYM_DICT[k]) SYNONYM_DICT[k] = v;
+        else SYNONYM_DICT[k].push(...v.filter(x => !SYNONYM_DICT[k].includes(x)));
+      }
+    }
+  } catch {}
+}
+
+// 概念组：命中概念组任一成员 → 扩展整个组（词组级联想）
+const CONCEPT_GROUPS = [];
+if (EXT_DICT && EXT_DICT.concepts) {
+  for (const [name, members] of Object.entries(EXT_DICT.concepts)) {
+    CONCEPT_GROUPS.push({ name, members: new Set(members.map(m => String(m).toLowerCase())) });
+  }
+}
+
 function expandSynonyms(query) {
   const q = String(query || '').toLowerCase();
   const words = q.match(/[\u4e00-\u9fff]+|[a-zA-Z0-9+#_.-]+/g) || [];
@@ -521,8 +557,26 @@ function expandSynonyms(query) {
       for (const s of FACT_ALIASES[lw]) expansions.add(s);
     }
   }
+  // v6.5: 概念组扩展——查询词命中某概念组任一成员 → 整组成员加入扩展
+  if (CONCEPT_GROUPS.length) {
+    const qLower = q;
+    for (const g of CONCEPT_GROUPS) {
+      for (const w of words) {
+        if (g.members.has(w) || (w.length >= 2 && qLower.includes(w))) {
+          if (g.members.has(w)) {
+            for (const m of g.members) {
+              if (m !== w && m.length >= 2) expansions.add(m);
+            }
+            break;
+          }
+        }
+      }
+    }
+  }
   if (expansions.size === 0) return q;
-  return q + ' ' + [...expansions].join(' ');
+  // v6.5: 扩展词限长（防查询膨胀拖慢 BM25）
+  const capped = [...expansions].slice(0, 24);
+  return q + ' ' + capped.join(' ');
 }
 
 function importanceOf(role, text) {
@@ -2320,7 +2374,7 @@ async function multiPathSearch(query, opts = {}) {
   }
 
   if (semanticPromise) {
-    const SEMANTIC_TIMEOUT_MS = opts.semanticTimeoutMs || 200;
+    const SEMANTIC_TIMEOUT_MS = opts.semanticTimeoutMs || 80; // v6.5: 200→80（keyword 首出 20ms 达标，语义快则合并，慢不阻塞）
     try {
       const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('semantic_timeout')), SEMANTIC_TIMEOUT_MS));
       const semanticResult = await Promise.race([semanticPromise, timeout]);
@@ -2426,10 +2480,24 @@ async function multiPathSearch(query, opts = {}) {
   const layerStats = {};
   for (const r of filteredMerged) layerStats[r.layer] = (layerStats[r.layer] || 0) + 1;
 
+  // v6.5: layerTopK — 指定层各取 topK（recall 需要 medium/long 不被 raw 高分挤出）
+  let outResults = filteredMerged.slice(0, opts.topN || 20);
+  if (opts.layerTopK) {
+    const seenOut = new Set(outResults);
+    for (const [ly, k] of Object.entries(opts.layerTopK)) {
+      // filteredMerged 的 layer 已被 layerName() 转中文（2477 行）→ 用显示名匹配
+      const en = LAYER_NAMES[ly] || ly; // 'medium' → '中期归档'
+      const picked = filteredMerged.filter(r => r.layer === en || r.layer === ly).slice(0, k);
+      for (const p of picked) {
+        if (!seenOut.has(p)) { seenOut.add(p); outResults.push(p); }
+      }
+    }
+  }
+
   const result = { 
     total: filteredMerged.length, 
     layers: layerStats, 
-    results: filteredMerged.slice(0, 20), 
+    results: outResults, 
     weights: layerNames.reduce((o, l) => ({ ...o, [l]: Math.round(weights[l] * 100) / 100 }), {}),
     _v5: { semanticAsync: semanticStatus, factQuestion: factQ },
     asOf: opts.asOf ? { date: opts.asOf, filteredOut: asOfFiltered } : undefined,
@@ -2683,13 +2751,46 @@ async function remoteEmbed(texts) {
 }
 
 function loadVectors() {
-  try { return JSON.parse(fs.readFileSync(VECTORS_FILE, 'utf8')); }
+  try {
+    const v = JSON.parse(fs.readFileSync(VECTORS_FILE, 'utf8'));
+    const dim = v.dim || 0;
+    // v6.5: 有 .bin 时向量从二进制读（零解析）；无 bin（旧格式）→ items 内嵌 vec
+    if (fs.existsSync(VECTORS_BIN) && dim > 0) {
+      const buf = fs.readFileSync(VECTORS_BIN);
+      const base = new Float64Array(buf.buffer, buf.byteOffset, Math.floor(buf.byteLength / 8));
+      for (let i = 0; i < v.items.length; i++) {
+        const off = i * dim;
+        if (off + dim <= base.length) {
+          v.items[i].vec = new Float64Array(base.buffer, base.byteOffset + off * 8, dim);
+        }
+      }
+      return v;
+    }
+    return v;
+  }
   catch { return { mode: null, dim: 0, items: [], updatedAt: null, remoteFailed: false }; }
 }
 
 function saveVectors(v) {
   ensureDirs();
   v.updatedAt = nowIso();
+  // v6.5: 向量列存 bin（把每个 item.vec 抽出来按序写 float64）
+  try {
+    const dim = v.dim || 0;
+    const withVec = (v.items || []).filter(i => i.vec && i.vec.length === dim);
+    if (withVec.length > 0 && dim > 0) {
+      const buf = Buffer.alloc(withVec.length * dim * 8);
+      for (let i = 0; i < withVec.length; i++) {
+        const vv = withVec[i].vec;
+        for (let j = 0; j < dim; j++) buf.writeDoubleLE(Number(vv[j]), (i * dim + j) * 8);
+      }
+      fs.writeFileSync(VECTORS_BIN, buf);
+      // JSON 里去掉 vec（只留元数据），行数大减
+      const meta = { ...v, items: v.items.map(i => { const c = { ...i }; delete c.vec; return c; }) };
+      fs.writeFileSync(VECTORS_FILE, JSON.stringify(meta));
+      return;
+    }
+  } catch {}
   fs.writeFileSync(VECTORS_FILE, JSON.stringify(v));
 }
 
@@ -3190,13 +3291,21 @@ function cmdRecord(role, text, opts = {}) {
   // v4.1: Recall 自动触发 — 用户高 imp 消息自动搜索相关历史
   if (role === 'user' && imp >= 0.4 && text.length > 20) {
     const query = text.slice(0, 200);
-    multiPathSearch(query, 'hybrid').then(results => {
+    // v6.5 修复: 传参 bug ('hybrid' 字符串当 opts) + 空索引时异步构建本地语义
+    try { ensureSemanticIndexAsync(); } catch {}
+    multiPathSearch(query, { mode: 'hybrid' }).then(results => {
       const arr = Array.isArray(results) ? results : (results && results.results) || [];
       const relevant = arr
         .filter(r => ['medium', 'long', '中期归档', '长期知识'].includes(r.layer) && (r.imp || 0) >= 0.4)
         .slice(0, 3);
       if (relevant.length) {
-        const flashbacks = relevant.map(r => ({
+        if (process.env.MN_DEBUG_RECALL) {
+    const layerC = {};
+    for (const r of arr) layerC[r.layer] = (layerC[r.layer] || 0) + 1;
+    console.error('[recall-debug] layers:', JSON.stringify(layerC));
+    console.error('[recall-debug] medium/long 样本:', JSON.stringify(arr.filter(r => ['medium','long','中期归档','长期知识'].includes(r.layer)).slice(0, 3).map(r => ({ layer: r.layer, imp: r.imp, score: r.combinedScore, t: (r.text || '').slice(0, 40) }))));
+  }
+  const flashbacks = relevant.map(r => ({
           text: (r.text || '').slice(0, 200),
           source: r.file || r.layer,
           imp: r.imp || 0,
@@ -3729,13 +3838,18 @@ async function semanticSearch(query, topN = 8) {
   if (!qv) qv = localEmbed(query);
 
   const results = [];
+  // v6.5 性能修复: 原 else 分支对每个 item 重算 localEmbed(item.text)（3127 次 → 600ms+）
+  // 现在: item.vec 维度匹配直接用（local 索引存的就是本地向量）；只有真正不匹配才兜底
+  const qLocal = localEmbed(query);
+  const qVec = (qv && qv.length) ? qv : qLocal;
   for (const item of vec.items) {
     let sim;
-    if (qvMode === 'remote' && vec.mode === 'remote' && item.vec && item.vec.length === vec.dim) {
-      sim = cosine(qv, item.vec);
+    if (item.vec && item.vec.length === qVec.length) {
+      sim = cosine(qVec, item.vec);
+    } else if (item.vec && item.vec.length === qLocal.length) {
+      sim = cosine(qLocal, item.vec);
     } else {
-      // 维度/模式不匹配：双方都用本地向量比
-      sim = cosine(localEmbed(query), localEmbed(item.text));
+      sim = cosine(qLocal, localEmbed(item.text)); // 罕见兜底（维度异常）
     }
     if (sim > 0.05) results.push({ ...item, score: Math.round(sim * (1 + item.imp) * 1000) / 1000 });
   }
@@ -3765,7 +3879,7 @@ async function cmdSearch(query, opts) {
   if (effectiveMode !== mode) opts = { ...opts, mode: effectiveMode };
   if (s.semanticEnabled && !vec.items.length && (effectiveMode === 'semantic' || effectiveMode === 'hybrid')) await cmdEmbedSilent();
 
-  const result = await multiPathSearch(query, { mode, asOf });
+  const result = await multiPathSearch(query, { mode, asOf, topN: opts.topN ? parseInt(opts.topN, 10) : 20 });
 
   // P1: 语义去重 — 移除内容相似度 >80% 的重复结果
   const deduped = dedupeResults(result.results);
@@ -3813,6 +3927,23 @@ async function cmdEmbedSilent() {
   const savedOut = console.log;
   console.log = () => {};
   try { await cmdEmbed({}); } catch {} finally { console.log = savedOut; }
+}
+
+// v6.5: 确保本地语义索引存在（纯本地字向量，零 API）；fire-and-forget 版
+function ensureSemanticIndexAsync() {
+  try {
+    const st = loadState();
+    if (!st.semanticEnabled) return;
+    const vec = loadVectors();
+    if (vec.items.length) return;
+    cmdEmbedSilent(); // 不 await（hook 路径不能阻塞）
+  } catch {}
+}
+async function ensureSemanticIndex() {
+  const st = loadState();
+  if (!st.semanticEnabled) return;
+  const vec = loadVectors();
+  if (!vec.items.length) await cmdEmbedSilent();
 }
 
 function cmdStats() {
@@ -4234,7 +4365,10 @@ async function cmdRecall(opts) {
   if (!query) return out({ error: '用法: engine.js recall --query "内容"' });
 
   // 用 hybrid 模式搜索，只取 high-imp 结果
-  const results = await multiPathSearch(query, 'hybrid');
+  // v6.5 修复: 传参 bug ('hybrid' 字符串当 opts → 实际 keyword) + 空索引先构建本地语义
+  try { await ensureSemanticIndex(); } catch {}
+  // v6.5: layerTopK — 修复 recall 空结果（medium/long 常被 raw 高 imp 命中挤出前 20）
+  const results = await multiPathSearch(query, { mode: 'hybrid', layerTopK: { medium: 4, long: 4 } });
   // 过滤：只要 medium 和 long 层的，imp≥0.5
   const arr = Array.isArray(results) ? results : (results && results.results) || [];
   const relevant = arr

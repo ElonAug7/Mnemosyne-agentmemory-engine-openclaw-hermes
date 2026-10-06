@@ -197,6 +197,8 @@ const LONG_LINK   = path.join(D.long, 'MEMORY.md');
 const PROTO_FILE  = path.join(ROOT, 'MEMORY-PROTOCOL.md');
 const OFFSETS_FILE = path.join(D.engine, 'transcript-offsets.json');
 const VECTORS_FILE = path.join(D.engine, 'embeddings.json');
+const VECTOR_QUANT = 10000;  // v6.6: int16 量化标度（normalize() 精度即 1e-4）
+const VEC_MAGIC = Buffer.from('MNVEC2\n\0');  // v6.6: **8 字节**头（须偶数，否则 Int16Array 视图对不齐会退化成整块复制）；无此头 = 旧 f64 裸数据
 const VECTORS_BIN = path.join(D.engine, 'embeddings.bin'); // v6.5: 向量二进制列存（JSON 12MB parse 60ms+ → bin 零解析）
 const TODOS_FILE  = path.join(D.engine, 'todos.json');
 const TODOS_MD    = path.join(MEM, 'todos.md');
@@ -1695,19 +1697,20 @@ function searchLayer(query, layer, opts = {}) {
   const terms = tokenizeChinese(query);
   const results = [];
 
-  const uniCache = { unis: meaningfulUnigrams(query) }; // v6.3 性能: unigram 只算一次
-  const match = (text) => {
-    const lower = text.toLowerCase();
-    if (lower.includes(query.toLowerCase())) return true;
-    if (terms.some(t => lower.includes(t.toLowerCase()))) return true;
+  // v6.6 性能: 查询侧的 query/terms/unigram 小写化**只算一次**。
+  // 原先 `terms.some(t => t.toLowerCase())` 在每一行都重建一遍小写串（行数 × 词数 次分配）。
+  const qLower = String(query).toLowerCase();
+  const termsLower = terms.map(t => String(t).toLowerCase());
+  const unisLower = meaningfulUnigrams(query).map(u => String(u).toLowerCase());
+  const matchLower = (lower) => {
+    if (lower.includes(qLower)) return true;
+    for (let i = 0; i < termsLower.length; i++) if (lower.includes(termsLower[i])) return true;
     // v6.3: unigram 回退——bigram 零命中时用有意义单字召回（否则候选集为空，再好的排序也白搭）
-    const unis = uniCache.unis;
     let uniHit = 0;
-    for (const u of unis) {
-      if (lower.includes(u)) uniHit++;
-    }
+    for (let i = 0; i < unisLower.length; i++) if (lower.includes(unisLower[i])) uniHit++;
     return uniHit >= 2; // 至少 2 个有意义单字命中才召回，控制噪音
   };
+  const match = (text) => matchLower(String(text).toLowerCase());
 
   if (layer === 'working') {
     try {
@@ -2723,6 +2726,18 @@ function normalize(v) {
 function cosine(a, b) {
   const n = Math.min(a.length, b.length);
   let dot = 0;
+  // v6.6: 量化向量走查表还原。LUT[k+Q] === k/Q 与量化前的 float64 逐位相同，
+  // 故点积结果与旧 f64 存储**完全一致**，同时避免逐元素除法开销。
+  if (b instanceof Int16Array) {
+    const lut = quantLut();
+    for (let i = 0; i < n; i++) dot += a[i] * lut[b[i] + VECTOR_QUANT];
+    return dot;
+  }
+  if (a instanceof Int16Array) {
+    const lut = quantLut();
+    for (let i = 0; i < n; i++) dot += lut[a[i] + VECTOR_QUANT] * b[i];
+    return dot;
+  }
   for (let i = 0; i < n; i++) dot += a[i] * b[i];
   return dot;
 }
@@ -2750,23 +2765,51 @@ async function remoteEmbed(texts) {
   return all;
 }
 
+let _vecCache = null;                 // v6.6: 进程内缓存（原先每次调用都重读 27MB）
+let _qLut = null;                     // int16 → float64 查表：LUT[k+Q] === k/Q 逐位等价
+
+function quantLut() {
+  if (!_qLut) {
+    _qLut = new Float64Array(2 * VECTOR_QUANT + 1);
+    for (let k = -VECTOR_QUANT; k <= VECTOR_QUANT; k++) _qLut[k + VECTOR_QUANT] = k / VECTOR_QUANT;
+  }
+  return _qLut;
+}
+
 function loadVectors() {
+  if (_vecCache) return _vecCache;    // v6.6: 命中缓存，避免重复 27MB 读取 + JSON 解析
   try {
     const v = JSON.parse(fs.readFileSync(VECTORS_FILE, 'utf8'));
     const dim = v.dim || 0;
     // v6.5: 有 .bin 时向量从二进制读（零解析）；无 bin（旧格式）→ items 内嵌 vec
     if (fs.existsSync(VECTORS_BIN) && dim > 0) {
       const buf = fs.readFileSync(VECTORS_BIN);
-      const base = new Float64Array(buf.buffer, buf.byteOffset, Math.floor(buf.byteLength / 8));
-      for (let i = 0; i < v.items.length; i++) {
-        const off = i * dim;
-        if (off + dim <= base.length) {
-          v.items[i].vec = new Float64Array(base.buffer, base.byteOffset + off * 8, dim);
+      const q = buf.length >= VEC_MAGIC.length && buf.subarray(0, VEC_MAGIC.length).equals(VEC_MAGIC);
+      if (q) {
+        // v6.6: int16 量化列存（磁盘 1/4）。零拷贝视图；标度在 cosine 内用查表还原，逐位等价。
+        const off0 = VEC_MAGIC.length;
+        const ab = (buf.byteOffset + off0) % 2 === 0
+          ? buf.buffer
+          : buf.buffer.slice(buf.byteOffset + off0, buf.byteOffset + buf.byteLength);
+        const shift = ab === buf.buffer ? buf.byteOffset + off0 : 0;
+        const base = new Int16Array(ab, shift, Math.floor((buf.byteLength - off0) / 2));
+        for (let i = 0; i < v.items.length; i++) {
+          const off = i * dim;
+          if (off + dim <= base.length) v.items[i].vec = base.subarray(off, off + dim);
+        }
+        v.quant = VECTOR_QUANT;
+      } else {
+        const base = new Float64Array(buf.buffer, buf.byteOffset, Math.floor(buf.byteLength / 8));
+        for (let i = 0; i < v.items.length; i++) {
+          const off = i * dim;
+          if (off + dim <= base.length) {
+            v.items[i].vec = new Float64Array(base.buffer, base.byteOffset + off * 8, dim);
+          }
         }
       }
-      return v;
+      _vecCache = v; return v;
     }
-    return v;
+    _vecCache = v; return v;
   }
   catch { return { mode: null, dim: 0, items: [], updatedAt: null, remoteFailed: false }; }
 }
@@ -2779,12 +2822,20 @@ function saveVectors(v) {
     const dim = v.dim || 0;
     const withVec = (v.items || []).filter(i => i.vec && i.vec.length === dim);
     if (withVec.length > 0 && dim > 0) {
-      const buf = Buffer.alloc(withVec.length * dim * 8);
+      // v6.6: int16 量化列存。normalize() 已把值 round 到 1e-4，×10000 必为整数 → 无损。
+      const buf = Buffer.alloc(VEC_MAGIC.length + withVec.length * dim * 2);
+      VEC_MAGIC.copy(buf, 0);
+      let o = VEC_MAGIC.length;
       for (let i = 0; i < withVec.length; i++) {
         const vv = withVec[i].vec;
-        for (let j = 0; j < dim; j++) buf.writeDoubleLE(Number(vv[j]), (i * dim + j) * 8);
+        for (let j = 0; j < dim; j++) {
+          let k = Math.round(Number(vv[j]) * VECTOR_QUANT);
+          if (k > 32767) k = 32767; else if (k < -32768) k = -32768;
+          buf.writeInt16LE(k, o); o += 2;
+        }
       }
       fs.writeFileSync(VECTORS_BIN, buf);
+      _vecCache = null;               // v6.6: 落盘后失效缓存
       // JSON 里去掉 vec（只留元数据），行数大减
       const meta = { ...v, items: v.items.map(i => { const c = { ...i }; delete c.vec; return c; }) };
       fs.writeFileSync(VECTORS_FILE, JSON.stringify(meta));
@@ -3724,16 +3775,34 @@ const DEVLOG_END = '<!-- devlog:end -->';
 
 // ⑨ 过期记忆降级 — 追踪 MEMORY.md 条目最后命中时间
 const STALE_FILE = path.join(D.engine, 'stale.json');
+// v6.6: stale.json 批写。原先每命中一行就「整读 38KB + 解析 + 全量排序 + 整写」，
+// 一次搜索能触发 60+ 次读写。改为进程内累加，退出时一次性落盘（含 500 条剪枝）。
+let _staleCache = null, _staleDirty = false;
+function _loadStale() {
+  if (_staleCache) return _staleCache;
+  try { _staleCache = JSON.parse(fs.readFileSync(STALE_FILE, 'utf8')); } catch { _staleCache = {}; }
+  return _staleCache;
+}
+function flushStale() {
+  if (!_staleDirty) return;
+  try {
+    const stale = _staleCache || {};
+    const keys = Object.keys(stale);
+    if (keys.length > 500) {   // 剪枝延迟到落盘时做，省掉每次命中的全量排序
+      keys.sort((a, b) => (stale[b].hit || '').localeCompare(stale[a].hit || ''));
+      const trimmed = {};
+      for (const k of keys.slice(0, 500)) trimmed[k] = stale[k];
+      _staleCache = trimmed;
+    }
+    ensureDirs();
+    fs.writeFileSync(STALE_FILE, JSON.stringify(_staleCache, null, 2));
+    _staleDirty = false;
+  } catch {}
+}
 function trackMemoryHit(lineText) {
-  ensureDirs();
-  const key = lineText.slice(0, 40);
-  let stale = {};
-  try { stale = JSON.parse(fs.readFileSync(STALE_FILE, 'utf8')); } catch {}
-  stale[key] = { hit: nowIso(), text: lineText.slice(0, 80) };
-  // 保留最近 500 条
-  const keys = Object.keys(stale).sort((a,b) => (stale[b].hit||'').localeCompare(stale[a].hit||''));
-  if (keys.length > 500) { const trimmed = {}; for (const k of keys.slice(0, 500)) trimmed[k] = stale[k]; stale = trimmed; }
-  fs.writeFileSync(STALE_FILE, JSON.stringify(stale, null, 2));
+  const stale = _loadStale();
+  stale[lineText.slice(0, 40)] = { hit: nowIso(), text: lineText.slice(0, 80) };
+  _staleDirty = true;
 }
 
 function appendDevLog(entry) {
@@ -4816,6 +4885,8 @@ function main() {
       console.error(HELP);
       process.exit(cmd ? 1 : 0);
   }
+  flushStale();   // v6.6: 批写的 stale.json 在命令结束时统一落盘
 }
 
+process.on('exit', () => { try { flushStale(); } catch {} });  // 兜底：异常路径也不丢
 main();

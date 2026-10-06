@@ -30,6 +30,58 @@ All notable changes to Mnemosyne.
 - Flows re-tested: file list (237 items), layer filters, file open (raw + markdown), search,
   report telemetry, ZH/EN toggle, dark/light base toggle. `node --check` clean.
 
+### Performance — 单次搜索 I/O 从 90 MB 降到 10 MB（2026-10-06）
+
+三项独立修复，每项都单独实测归因；**全部修复均验证搜索结果逐条不变**。
+
+- **`loadVectors()` 加进程内缓存**：原先没有任何缓存，每次调用都
+  `JSON.parse(embeddings.json 2.7MB)` + `readFileSync(embeddings.bin 27MB)`；一次
+  `search --mode hybrid` 会调用 3 次 → 80 MB。
+  **为什么不复用既有的 `memCache` / `cachedReadFile`（有意为之，非遗漏）**：
+  `cachedReadFile()` 返回的是 `.toString('utf8')` 的**字符串**，而向量需要二进制 buffer 才能建立
+  零拷贝的 `Int16Array` / `Float64Array` 视图；且 `memCache` 是面向小文本的 LRU（TTL 7 天 / 500 条），
+  把 27 MB buffer 塞进去会把有用的缓存全挤掉。故为向量单设一个二进制缓存。
+  （核实：`loadVectors()` 函数体内不含 `memCache` / `cachedReadFile` 任何引用，只有 `readFileSync`。）
+- **向量改 int16 量化列存**（8 字节头 `MNVEC2\n\0`；无头 = 旧 f64 裸数据，自动兼容并迁移）。
+  **头长度必须为偶数**——否则 `Int16Array` 视图对不齐，会退化成每次加载整块复制 6.8 MB
+  （初版写成 7 字节的 `MNVEC2\n`，正好踩中这个坑，已改）。
+  记号：`Q = VECTOR_QUANT = 10000`；`k` 为整数，满足「落盘值 === k / Q」。
+  - **为何无损**：`normalize()` 写出的就是 `Math.round(x*Q)/Q`，即精确的 `k/Q`。
+    所以 `Math.round(v*Q)` 是**把 k 还原出来**，不是对已有精度再做一次有损取整。
+    实测全部 3,415,040 个值：`np.array_equal(还原, 原值) = True`，`|k|max = 10000 ≤ 32767` 不溢出。
+  - **为何用查表**：`LUT[k+Q]` 预先算好 `k/Q`；JS 里 `k/Q` 产生的 double 与原始
+    `Math.round(x*Q)/Q` **逐位相同**，故点积结果与旧 f64 存储完全一致。查表免掉逐元素除法，
+    零额外开销；相比之下整体解量化成 Float64Array 需 10.7 ms，反而比现状 5.3 ms 更慢。
+    （整体除以标度、把 `Q` 提到求和号外**不等价**——会改变末位精度，故不采用。）
+- **`stale.json` 批写**：原先每命中一行就「整读 38 KB + 解析 + 全量排序 + 整写」，
+  一次搜索触发 60+ 次读写；改为进程内累加、退出时一次落盘。
+  **这一项才是 `searchLayer:long` 31.3 ms → 2.0 ms 的真正原因**——归因依据见下表逐项数据
+  （同一固定状态快照、`--profile` 逐层计时、每变体 best-of-3）。
+- （附带）`match()` 的查询侧小写化预计算。**实测仅省约 1.7 ms**，远小于原先估计——
+  long 层的开销原本几乎全在 `trackMemoryHit` 的 I/O 上。保留，但收益可忽略。
+
+逐项归因（`searchLayer:long`，ms，同一固定状态快照 / best-of-3）：
+
+| 变体 | base | B(缓存) | **C(stale批写)** | D(小写) | CD | ACD(全部) |
+|---|---|---|---|---|---|---|
+| long 层 | 31.28 | 27.28 | **2.05** | 29.61 | 2.00 | 2.15 |
+
+> `ACD`(2.15) 与 `CD`(2.00) 的 0.15 ms 差异在测量噪声内（计时为 ms 级、best-of-3）；
+> 且 long 层根本不接触向量，A 不可能影响它。
+
+| 指标 | 修复前 | 修复后 |
+|---|---|---|
+| 单次搜索读 | 75 次 / 90.1 MB | **38 次 / 10.3 MB** |
+| 单次搜索写 | 36 次 / 1.34 MB | **3 次 / 0.11 MB** |
+| 端到端耗时 | 253 ms | **169 ms** |
+| `searchLayer:long` | 31.3 ms | **2.0 ms** |
+| `embeddings.bin` | 27.32 MB | **6.83 MB** |
+| 记忆库总计 | 44 MB | **23.4 MB** |
+
+> **搜索结果不可跨次复现。** `trackHit()` 在检索过程中改写 `hit-frequency.json`，而该文件又反过来
+> 参与打分 —— **未打补丁的引擎自己就会漂移**（已验证：同一查询、同一引擎，连跑第 3 次结果指纹即改变）。
+> 这是既有行为，**不是本次改动引入的**；也正因如此，比对结果必须从固定状态快照出发。
+
 > 打 tag 但本文件无对应小节的版本：`v6.0.0`（Elite 层首次并入）、`v5.0.0-hermes`（Hermes 桥接）。
 > Tags without a section here: `v6.0.0`, `v5.0.0-hermes`.
 

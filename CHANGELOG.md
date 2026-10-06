@@ -2,6 +2,39 @@
 
 All notable changes to Mnemosyne.
 
+## [Unreleased] — 隐私修复：远端 embedding 改为默认关闭（2026-10-06）
+
+**背景.** 一位 awesome-list 维护者（`dell-zhang`）在审查条目时读了 `engine.js` 并指出：条目声称
+"no network"，但代码并不相符。经复核，**他的每一条都属实**，且问题自 v5.0.0 起就存在。
+
+### Security
+
+- **远端 embedding 默认关闭**（`remoteEmbedEnabled: false`）。原先 `remoteEmbed()` 会在
+  `findDashScopeKey()` 返回 key 时把文本 POST 到 `https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings`，
+  且 `loadState()` 默认 `semanticEnabled: true` —— `cmdRecord()`（hook 路径）与 `cmdRecall()` 在索引为空时会
+  自动构建，**用户无需做任何事就会联网**。现在只有显式 `embed --enable-remote` 之后才会发起网络请求。
+- **修复跨厂商 API key 泄漏**：`findDashScopeKey()` 原先用 `apiKey.startsWith('sk-')` 兜底，
+  会把配置里第一个 `sk-` 开头的 key（可能是 OpenAI / DeepSeek 等）**连同用户记忆文本一起发给 DashScope**。
+  现在只接受 `baseUrl` 明确指向 dashscope 的条目。
+- **修复必然失败的 Authorization 头**：原为 `'Authorization': '***' + key`（疑似被脱敏工具改坏源码），
+  应为 `'Bearer ' + key`。该 bug 导致请求必然 401 —— 也正因如此，历史上没有造成更大的外发，
+  但它同时意味着远端路径**从来没有真正工作过**。
+
+### Added
+
+- `tests/test-no-network-by-default.sh` —— 断言默认路径下**零外部网络请求**（回环放行），
+  并含**反向对照**：`embed --enable-remote` 后必须确实尝试连接 dashscope，以证明闸门是"关着"而非"坏了"。
+- `embed --enable-remote` / `embed --disable-remote` 显式开关；`status` 中新增 `remoteEmbedEnabled` 字段。
+
+### Fixed
+
+- README 中"网络依赖：零 — 默认不联网"、"无需 embedding 模型"、"零 API key"等表述与实现不符，
+  已改为如实描述（默认零联网；远端路径默认关闭、需显式开启、且会读取 DashScope key）。
+
+> **数据外发事实（如实记录）**：本机配置含真实 DashScope key，索引构建于 2026-09-25 07:40。
+> 因 `remoteEmbed()` 是「先 fetch 再判 `!r.ok`」，且首批即 401 中断，**实际外发为前 10 条文本（约 1.5 KB）**，
+> 不是全部 6670 条。检索词未外发（`semanticSearch` 的远端分支有 `vec.mode === 'remote'` 前置条件，本机为 `local`）。
+
 ## [Unreleased] — WebUI restyled to the KVAXIR design system (2026-10-06)
 
 ### Changed

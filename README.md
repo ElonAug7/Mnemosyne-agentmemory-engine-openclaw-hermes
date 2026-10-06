@@ -172,7 +172,7 @@ engine.js recalibrate --apply      # 写入 config.json，下次搜索生效
 
 ### 一句话定义
 
-Mnemosyne v6 是一个纯本地、零神经网络依赖的认知记忆引擎，基于**复合线索理论**（compound-cue theory）构建。单次评分替代多路 merge，配备 5 个可插拔模块。无需 LLM API、无需 embedding 模型、无需向量数据库。
+Mnemosyne v6 是一个纯本地、零神经网络依赖的认知记忆引擎，基于**复合线索理论**（compound-cue theory）构建。单次评分替代多路 merge，配备 5 个可插拔模块。默认路径无需 LLM API、无需 embedding 模型、无需向量数据库（远端 embedding 是一项**默认关闭**的可选功能，见下方安全表）。
 
 ### 核心公式
 
@@ -190,7 +190,7 @@ Mnemosyne v6 是一个纯本地、零神经网络依赖的认知记忆引擎，�
 
 ### 性能 Performance
 
-keyword ~18ms / hybrid ~20ms 感知 · vs v4.5-Pro: keyword 2.3× 快, hybrid 6.5× 快 · 缓存命中率随使用自动提升 · RAM 0MB · 零依赖 · 零 API key
+keyword ~18ms / hybrid ~20ms 感知 · vs v4.5-Pro: keyword 2.3× 快, hybrid 6.5× 快 · 缓存命中率随使用自动提升 · RAM 0MB · 零依赖 · 默认零 API key
 
 ---
 
@@ -249,8 +249,8 @@ Mnemosyne 默认即安全，部署者无需额外配置：
 | XSS 防护 | Markdown 渲染前过滤 script/iframe/事件处理器等 |
 | 数据目录权限 | 记忆目录自动 chmod 700（仅属主可读写，部署即生效） |
 | 路径穿越 | 文件浏览白名单（仅记忆目录 + MEMORY.md） |
-| 网络依赖 | 零 — 语义检索为可选功能，默认不联网 |
-| API key | 不需要任何 key 即可运行（语义增强才需要自行配置） |
+| 网络依赖 | **默认零联网** — 本地语义检索用哈希向量，完全离线。仅在显式执行 `embed --enable-remote` 后，引擎才会把文本发往 `dashscope.aliyuncs.com`；该开关默认关闭，`embed --disable-remote` 可随时关回 |
+| API key | 默认不需要任何 key。仅当显式开启远端 embedding 时，才会读取配置中 baseUrl 指向 dashscope 的 key（不会拿其它厂商的 key） |
 | 写入安全 | 关键文件原子写入（tmp+rename），防中断写坏 |
 | 长期记忆写入 | proposals 审阅制 — 自动提炼只生成候选，需人工确认 |
 | 数据目录 | 全部位于你的记忆根目录，不写系统任何位置 |

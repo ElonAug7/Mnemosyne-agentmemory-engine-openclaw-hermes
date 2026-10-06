@@ -348,9 +348,12 @@ function loadState() {
       enabled: true, turns: 0, totalMessages: 0,
       lastSignalAt: null, lastMessageAt: null,
       semanticEnabled: true,
+      // v6.6 隐私守卫：远端 embedding **默认关闭**。开启后引擎才会把文本发往 dashscope.aliyuncs.com。
+      // 旧版无此开关且默认走远端，与 README「默认不联网」的承诺不符。
+      remoteEmbedEnabled: false,
     }, JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')));
   } catch {
-    return { enabled: true, turns: 0, totalMessages: 0, lastSignalAt: null, lastMessageAt: null };
+    return { enabled: true, turns: 0, totalMessages: 0, lastSignalAt: null, lastMessageAt: null, remoteEmbedEnabled: false };
   }
 }
 
@@ -2579,9 +2582,11 @@ function findDashScopeKey() {
       if (typeof o.baseUrl === 'string') baseUrl = o.baseUrl;
       if (typeof o.apiKey === 'string') {
         const isDashScope = baseUrl && baseUrl.includes('dashscope') && !baseUrl.includes('coding');
-        const looksLikeDS = o.apiKey.startsWith('sk-');
+        // v6.6 安全修复：**删除 `apiKey.startsWith('sk-')` 兜底**。
+        // 旧逻辑会把配置里第一个 sk- 开头的 key（可能是 OpenAI / DeepSeek / 其它厂商）
+        // 当作 DashScope key，连同用户记忆文本一起 POST 给阿里云。
+        // 只接受 baseUrl 明确指向 dashscope 的条目。
         if (isDashScope) best = { key: o.apiKey, prio: 2 };
-        else if (!best && looksLikeDS) best = { key: o.apiKey, prio: 1 };
       }
       for (const k of Object.keys(o)) walk(o[k], baseUrl);
     })(cfg, null);
@@ -2742,7 +2747,13 @@ function cosine(a, b) {
   return dot;
 }
 
+// v6.6 隐私守卫：只有用户在 state 里显式开启（embed --enable-remote）才允许任何网络调用。
+function remoteEmbedEnabled() {
+  try { return loadState().remoteEmbedEnabled === true; } catch { return false; }
+}
+
 async function remoteEmbed(texts) {
+  if (!remoteEmbedEnabled()) return null;   // v6.6: 默认零联网，任何文本都不外发
   const key = findDashScopeKey();
   if (!key) return null;
   // DashScope 单次最多 10 条，分批请求
@@ -2752,7 +2763,8 @@ async function remoteEmbed(texts) {
     try {
       const r = await fetch('https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings', {
         method: 'POST',
-        headers: { 'Authorization': '***' + key, 'Content-Type': 'application/json' },
+        // v6.6 修复：原为 '***' + key（疑似脱敏工具误改源码），导致请求必然 401。
+        headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: 'text-embedding-v4', input: batch, dimensions: 256 }),
         signal: AbortSignal.timeout(20000),
       });
@@ -2860,6 +2872,19 @@ async function cmdEmbed(opts) {
     s.semanticEnabled = false;
     saveState(s);
     return out({ semanticEnabled: false, note: '语义搜索已关闭。索引文件保留，可随时 --enable 恢复。' });
+  }
+
+  // v6.6 远端 embedding 显式开关（默认关闭）
+  if (opts['enable-remote'] !== undefined) {
+    s.remoteEmbedEnabled = true;
+    saveState(s);
+    return out({ remoteEmbedEnabled: true,
+      warning: '远端 embedding 已开启：索引构建与语义查询会把文本发往 https://dashscope.aliyuncs.com 。关闭用 embed --disable-remote。' });
+  }
+  if (opts['disable-remote'] !== undefined) {
+    s.remoteEmbedEnabled = false;
+    saveState(s);
+    return out({ remoteEmbedEnabled: false, note: '远端 embedding 已关闭（默认）。引擎不发起任何网络请求。' });
   }
 
   if (!s.semanticEnabled && opts.force === undefined) {
@@ -3614,6 +3639,7 @@ function cmdStatus() {
   const vec = loadVectors();
   s.semanticEnabled = s.semanticEnabled || false;
   s.semanticIndex = { enabled: s.semanticEnabled, items: vec.items.length, mode: vec.mode, updatedAt: vec.updatedAt, remoteFailed: vec.remoteFailed || false };
+  s.remoteEmbedEnabled = s.remoteEmbedEnabled === true;   // v6.6: 远端 embedding 是否开启（默认 false）
   const todos = loadTodos();
   s.todos = { total: todos.length, open: todos.filter(t => t.status === 'open').length };
   const c2 = loadConfig(); s.retention = c2.retention; s.config = { weights: c2.weights };

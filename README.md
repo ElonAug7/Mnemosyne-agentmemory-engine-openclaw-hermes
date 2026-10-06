@@ -1,4 +1,4 @@
-# 🦞 Mnemosyne v6 — Cognitive Memory Engine Memory Engine · 复合线索记忆引擎
+# 🦞 Mnemosyne v6.5 — Cognitive Memory Engine Memory Engine · 复合线索记忆引擎
 
 > **全量存储，精准回忆。不模拟遗忘，只模拟注意。**
 > Store everything like a machine. Recall like a human.
@@ -40,15 +40,50 @@
 
 ## Install · 安装
 
+仓库根目录**就是**当前版本，直接装即可：
+
 ```bash
-cp -r Mnemosyne-v6 ~/.openclaw/workspace/tools/
-cd ~/.openclaw/workspace/tools/Mnemosyne-v6 && bash install.sh
+git clone https://github.com/ElonAug7/Mnemosyne-agentmemory-engine-openclaw-hermes.git
+cd Mnemosyne-agentmemory-engine-openclaw-hermes
+bash install.sh
 ```
 
 安装后自动注入强制协议到 SOUL.md 和 AGENTS.md。
 Auto-injects mandatory protocol into SOUL.md and AGENTS.md on install.
 
 Web UI: `http://127.0.0.1:8765`
+
+---
+
+## Versions · 版本
+
+历史版本不再以目录堆在仓库里，而是**一个版本一个 git tag**。检出任意 tag，仓库根就是那个版本的完整代码：
+
+```bash
+git tag -l            # 列出全部版本
+git checkout v4.5.0   # 回到 v4.5.0 的完整代码
+```
+
+| Tag | 版本 Version |
+|---|---|
+| `v6.5.0` | **当前 Current** — Local Dictionary Semantics + Recall Pipeline Fixes |
+| `v6.4.0` | User Profile Reconstruction |
+| `v6.2.0` | Hardening |
+| `v6.0.0` | Elite tier |
+| `v5.0.0-hermes` | Hermes integration |
+| `v5.0.0` | Compound-Cue Core |
+| `v4.5.0-pro` | Modular Architecture |
+| `v4.5.0-en` | English Edition |
+| `v4.5.0` | The Lean Engine |
+| `v4.0.0-pro` | Evaluation-Ready |
+| `v4.0.0` | Memory Echo |
+| `v3.0.0` | Security Hardening |
+| `v3.0.0-lite` | Stripped |
+| `v2.0.0` | User Experience |
+| `v1.0.0` | Initial Release |
+
+> v6.1.0 / v6.3.0 只体现在 CHANGELOG 中，没有单独快照目录，故未打 tag。
+> v6.1.0 / v6.3.0 exist only as CHANGELOG entries — no snapshot was ever cut, so no tag.
 
 ---
 
